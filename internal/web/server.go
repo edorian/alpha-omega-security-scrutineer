@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
 	"gorm.io/gorm"
 
 	"scrutineer/internal/db"
@@ -152,12 +151,11 @@ func New(gdb *gorm.DB, q *queue.Queue, log *slog.Logger, broker *Broker, w *work
 	if err != nil {
 		return nil, err
 	}
-	csafSchema, err := getCSAFSchema()
-	if err != nil {
+	if _, err := getCSAFSchema(); err != nil {
 		return nil, fmt.Errorf("load csaf schema: %w", err)
 	}
 	return &Server{DB: gdb, Queue: q, Log: log, Broker: broker, Worker: w, tmpl: t,
-		resolvePURL: resolvePURLRepo, csafSchema: csafSchema}, nil
+		resolvePURL: resolvePURLRepo}, nil
 }
 
 func (s *Server) Handler() http.Handler {
