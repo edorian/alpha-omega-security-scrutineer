@@ -225,7 +225,7 @@ func run(log *slog.Logger) error {
 	if !f.noDocker && worker.DockerAvailable() {
 		allow := append(append([]string{}, worker.DefaultEgressAllow...), egressExtra...)
 		token := worker.NewProxyToken()
-		port, err := worker.StartEgressProxy(&worker.EgressProxy{Allow: allow, Token: token, Log: log})
+		port, err := worker.StartEgressProxy(&worker.EgressProxy{Allow: allow, Token: token, APIPort: addrPort(f.addr), Log: log})
 		if err != nil {
 			return fmt.Errorf("start egress proxy: %w", err)
 		}

@@ -78,6 +78,12 @@ func (w *Worker) doSkill(ctx context.Context, scan *db.Scan, emit func(Event)) (
 	// successful completion; failed/cancelled dirs are left so the
 	// operator can inspect what the skill saw.
 	workRoot := w.workRoot(scan.ID)
+	if !filepath.IsLocal(skill.Name) || strings.Contains(skill.Name, "/") {
+		return "", fmt.Errorf("skill name %q contains path separators", skill.Name)
+	}
+	if skill.OutputFile != "" && (skill.OutputFile != filepath.Base(skill.OutputFile) || !filepath.IsLocal(skill.OutputFile)) {
+		return "", fmt.Errorf("skill output_file %q contains path separators", skill.OutputFile)
+	}
 	skillDir := filepath.Join(workRoot, ".claude", "skills", skill.Name)
 	if err := stageSkill(&skill, skillDir); err != nil {
 		return "", fmt.Errorf("stage skill: %w", err)

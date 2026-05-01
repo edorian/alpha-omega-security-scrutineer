@@ -167,6 +167,59 @@ func TestEgressProxy_ConnectEndToEnd(t *testing.T) {
 	}
 }
 
+func TestEgressProxy_DeniesGatewayOnWrongPort(t *testing.T) {
+	p := &EgressProxy{
+		Allow:   []string{HostGatewayAlias},
+		APIPort: "8080",
+		Log:     quietLog(),
+	}
+
+	// CONNECT to allowed port should work (as far as allowlist goes)
+	r := httptest.NewRequest(http.MethodConnect, HostGatewayAlias+":8080", nil)
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, r)
+	// Will fail with 502 (no upstream listener) but NOT 403
+	if w.Code == http.StatusForbidden {
+		t.Fatalf("CONNECT to API port should not be forbidden: %s", w.Body)
+	}
+
+	// CONNECT to a different port should be denied
+	r = httptest.NewRequest(http.MethodConnect, HostGatewayAlias+":9090", nil)
+	w = httptest.NewRecorder()
+	p.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("CONNECT to non-API port: got %d, want 403", w.Code)
+	}
+
+	// Forward (non-CONNECT) to a different port should also be denied
+	r = httptest.NewRequest("GET", "http://"+HostGatewayAlias+":9090/secrets", nil)
+	w = httptest.NewRecorder()
+	p.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("forward to non-API port: got %d, want 403", w.Code)
+	}
+}
+
+func TestEgressProxy_NoPortRestrictionForOtherHosts(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+	_, port, _ := net.SplitHostPort(upstream.Listener.Addr().String())
+
+	p := &EgressProxy{
+		Allow:   []string{"127.0.0.1"},
+		APIPort: "8080",
+		Log:     quietLog(),
+	}
+	r := httptest.NewRequest("GET", "http://127.0.0.1:"+port+"/foo", nil)
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("non-gateway host on any port should be allowed: got %d", w.Code)
+	}
+}
+
 func TestProxyURLShape(t *testing.T) {
 	got := ProxyURL("abc", 1234)
 	want := "http://scrutineer:abc@host.docker.internal:1234"
