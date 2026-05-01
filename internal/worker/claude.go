@@ -36,6 +36,7 @@ type SkillJob struct {
 	Name       string
 	SkillDir   string // host absolute path to the staged skill directory
 	OutputFile string // relative to the scan workspace, e.g. "report.json"
+	Ref        string // git ref to checkout; empty = default branch
 }
 
 type SkillResult struct {
@@ -56,7 +57,7 @@ type LocalClaude struct {
 //	{DataDir}/scan-{id}/.claude/skills/NAME staged skill (read by claude-code)
 //	{DataDir}/scan-{id}/OutputFile          where the skill writes, if any
 func (l LocalClaude) RunSkill(ctx context.Context, sj SkillJob, emit func(Event)) (SkillResult, error) {
-	src, err := ensureClone(ctx, sj.Repo, sj.WorkRoot, l.FullClone, emit)
+	src, err := ensureClone(ctx, sj.Repo, sj.WorkRoot, l.FullClone, sj.Ref, emit)
 	if err != nil {
 		return SkillResult{}, err
 	}

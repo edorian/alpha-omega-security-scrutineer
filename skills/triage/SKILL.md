@@ -36,7 +36,9 @@ A docs repo (markdown only) has neither. An infrastructure repo (terraform, helm
 
 Before enqueueing anything, check what already ran so a re-trigger is idempotent: `GET {api_base}/repositories/{repository_id}/scans` returns every scan on this repository with `skill_name` and `status`. Build a set of skill names with `status="done"` or `status="running"` and skip those.
 
-For every remaining skill in the list below, enqueue it: `POST {api_base}/repositories/{id}/skills/{name}/run` with an `Authorization: Bearer {token}` header. Empty JSON body. Order does not matter; the scrutineer worker runs them as they come in.
+For every remaining skill in the list below, enqueue it: `POST {api_base}/repositories/{id}/skills/{name}/run` with an `Authorization: Bearer {token}` header. Order does not matter; the scrutineer worker runs them as they come in.
+
+If `scrutineer.scan_ref` is set in `context.json`, include it in the POST body as `{"ref": "<value>"}` so child scans clone the same branch. If it is empty, send an empty JSON body or omit the body.
 
 Always:
 

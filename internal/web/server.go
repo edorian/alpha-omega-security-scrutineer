@@ -1315,21 +1315,22 @@ func (s *Server) createOrTriageRepo(ctx context.Context, input RepoInput, model 
 		return repo, false, err
 	}
 	isNew := existing == 0
-	if !isNew {
+	if !isNew && input.Branch == "" && input.SubPath == "" {
 		return repo, false, nil
 	}
 	var skill db.Skill
 	if err := s.DB.Where("name = ? AND active = ?", defaultSkillName, true).First(&skill).Error; err != nil {
 		s.Log.Warn("default skill not found, repo added with no scans", "skill", defaultSkillName)
-		return repo, true, nil
+		return repo, isNew, nil
 	}
 	if _, err := s.enqueueSkillWith(ctx, repo.ID, skill.ID, ScanOpts{
 		Model:   model,
 		SubPath: input.SubPath,
+		Ref:     input.Branch,
 	}); err != nil {
-		return repo, true, err
+		return repo, isNew, err
 	}
-	return repo, true, nil
+	return repo, isNew, nil
 }
 
 func bulkToastCategory(created int, invalid []string) string {
@@ -1545,6 +1546,7 @@ func (s *Server) scanRetry(w http.ResponseWriter, r *http.Request) {
 		Model:     scan.Model,
 		FindingID: scan.FindingID,
 		SubPath:   scan.SubPath,
+		Ref:       scan.Ref,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1600,6 +1602,7 @@ type ScanOpts struct {
 	Model     string
 	FindingID *uint
 	SubPath   string
+	Ref       string
 }
 
 func (s *Server) enqueueSkill(ctx context.Context, repoID, skillID uint, model string) (uint, error) {
@@ -1627,6 +1630,7 @@ func (s *Server) enqueueSkillWith(ctx context.Context, repoID, skillID uint, opt
 		SkillID:      &skillID,
 		FindingID:    opts.FindingID,
 		SubPath:      opts.SubPath,
+		Ref:          opts.Ref,
 		APIToken:     NewAPIToken(),
 	}
 	if err := s.DB.Create(&scan).Error; err != nil {

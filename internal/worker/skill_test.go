@@ -203,3 +203,39 @@ func TestStageSkill_writesMarkdownAndSchema(t *testing.T) {
 		t.Errorf("schema: %q", string(sch))
 	}
 }
+
+func TestStageContext_includesRef(t *testing.T) {
+	dir := t.TempDir()
+	repo := &db.Repository{URL: "https://example.com/x", Name: "x"}
+	scan := &db.Scan{ID: 1, RepositoryID: 1, APIToken: "t", Ref: "2.4.x"}
+	if err := stageContext(dir, "http://127.0.0.1:8080/api", scan, repo); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "context.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got skillContext
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Scrutineer.ScanRef != "2.4.x" {
+		t.Errorf("scan_ref = %q, want %q", got.Scrutineer.ScanRef, "2.4.x")
+	}
+}
+
+func TestStageContext_omitsRefWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	repo := &db.Repository{URL: "https://example.com/x", Name: "x"}
+	scan := &db.Scan{ID: 1, RepositoryID: 1, APIToken: "t"}
+	if err := stageContext(dir, "http://127.0.0.1:8080/api", scan, repo); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "context.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "scan_ref") {
+		t.Errorf("scan_ref should be omitted when empty, got: %s", b)
+	}
+}

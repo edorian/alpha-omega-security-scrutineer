@@ -33,6 +33,9 @@ type skillContextScrutineer struct {
 	RepoID    uint   `json:"repository_id"`        // convenience for URL building
 	SkillID   uint   `json:"skill_id,omitempty"`   // the running skill
 	FindingID uint   `json:"finding_id,omitempty"` // set for finding-scoped scans
+	// ScanRef is the git ref (branch/tag) the clone was checked out to.
+	// Empty means the repository's default branch.
+	ScanRef string `json:"scan_ref,omitempty"`
 	// ScanSubPath scopes code analysis to a sub-folder of ./src (monorepo
 	// support). Empty means the repo root. Skills that walk files honour
 	// this; skills that query external APIs ignore it.
@@ -100,6 +103,7 @@ func (w *Worker) doSkill(ctx context.Context, scan *db.Scan, emit func(Event)) (
 		Name:       skill.Name,
 		SkillDir:   skillDir,
 		OutputFile: skill.OutputFile,
+		Ref:        scan.Ref,
 	}
 	res, err := w.Runner.RunSkill(ctx, sj, emit)
 	scan.Commit = res.Commit
@@ -373,6 +377,9 @@ func stageContext(workRoot, apiBase string, scan *db.Scan, repo *db.Repository) 
 	}
 	if scan.FindingID != nil {
 		ctx.Scrutineer.FindingID = *scan.FindingID
+	}
+	if scan.Ref != "" {
+		ctx.Scrutineer.ScanRef = scan.Ref
 	}
 	if scan.SubPath != "" {
 		ctx.Scrutineer.ScanSubPath = scan.SubPath

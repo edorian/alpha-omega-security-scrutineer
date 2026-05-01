@@ -20,12 +20,12 @@ const dirPerm = 0o755
 // (scan-{id}) so concurrent scans do not share src or report.json,
 // removing a class of races where skill A's output gets clobbered by
 // skill B removing report.json before A finishes reading it.
-func ensureClone(ctx context.Context, repo db.Repository, work string, fullClone bool, emit func(Event)) (string, error) {
+func ensureClone(ctx context.Context, repo db.Repository, work string, fullClone bool, ref string, emit func(Event)) (string, error) {
 	src := filepath.Join(work, "src")
 	if err := os.MkdirAll(work, dirPerm); err != nil {
 		return "", err
 	}
-	if err := cloneOrFetch(ctx, repo.URL, src, fullClone, emit); err != nil {
+	if err := cloneOrFetch(ctx, repo.URL, src, fullClone, ref, emit); err != nil {
 		return "", fmt.Errorf("clone: %w", err)
 	}
 	return src, nil
@@ -40,9 +40,13 @@ func validateGitURL(u string) error {
 	return nil
 }
 
-func cloneOrFetch(ctx context.Context, url, dst string, fullClone bool, emit func(Event)) error {
+func cloneOrFetch(ctx context.Context, url, dst string, fullClone bool, ref string, emit func(Event)) error {
 	if err := validateGitURL(url); err != nil {
 		return err
+	}
+	resetTarget := "origin/HEAD"
+	if ref != "" {
+		resetTarget = "origin/" + ref
 	}
 	if _, err := os.Stat(filepath.Join(dst, ".git")); err == nil {
 		fetchArgs := []string{"-C", dst, "fetch", "--quiet", "origin"}
@@ -58,18 +62,20 @@ func cloneOrFetch(ctx context.Context, url, dst string, fullClone bool, emit fun
 		if out, err := git(ctx, "", fetchArgs...); err != nil {
 			return fmt.Errorf("%s: %w", out, err)
 		}
-		if out, err := git(ctx, "", "-C", dst, "reset", "--quiet", "--hard", "origin/HEAD"); err != nil {
+		if out, err := git(ctx, "", "-C", dst, "reset", "--quiet", "--hard", resetTarget); err != nil {
 			return fmt.Errorf("%s: %w", out, err)
 		}
 		return nil
 	}
-	// -- stops git option parsing so a URL can't be interpreted as a flag.
-	// GIT_PROTOCOL_FROM_USER=0 blocks ext:: and other user-facing protocol handlers.
 	args := []string{"clone", "--quiet"}
 	msg := "$ git clone " + url
+	if ref != "" {
+		args = append(args, "--branch", ref)
+		msg += " --branch " + ref
+	}
 	if !fullClone {
-		args = []string{"clone", "--depth", "1", "--quiet"}
-		msg = "$ git clone --depth 1 " + url
+		args = append(args, "--depth", "1")
+		msg += " (shallow)"
 	}
 	args = append(args, "--", url, dst)
 	emit(Event{Kind: KindText, Text: msg})

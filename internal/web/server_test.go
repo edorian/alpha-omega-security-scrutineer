@@ -1895,3 +1895,81 @@ func TestMaintainerShow_displaysFindingStatus(t *testing.T) {
 		t.Errorf("finding status not rendered in maintainer findings tab")
 	}
 }
+
+func TestRepoCreate_branchURLTriggersTriageWithRef(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	s.DB.Create(&db.Skill{Name: "triage", Active: true, Source: "test", Body: "test", OutputFile: "report.json", OutputKind: "freeform", Version: 1})
+
+	form := url.Values{"url": {"https://github.com/apache/httpd/tree/2.4.x"}}
+	req := httptest.NewRequest("POST", "/repositories", strings.NewReader(form.Encode()))
+	req.Host = testHost
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+
+	var scan db.Scan
+	if err := s.DB.First(&scan).Error; err != nil {
+		t.Fatalf("no scan created: %v", err)
+	}
+	if scan.Ref != "2.4.x" {
+		t.Errorf("scan.Ref = %q, want %q", scan.Ref, "2.4.x")
+	}
+}
+
+func TestRepoCreate_existingRepoWithBranchEnqueuesScan(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	s.DB.Create(&db.Skill{Name: "triage", Active: true, Source: "test", Body: "test", OutputFile: "report.json", OutputKind: "freeform", Version: 1})
+	s.DB.Create(&db.Repository{URL: "https://github.com/apache/httpd.git", Name: "httpd"})
+
+	form := url.Values{"url": {"https://github.com/apache/httpd/tree/2.4.x"}}
+	req := httptest.NewRequest("POST", "/repositories", strings.NewReader(form.Encode()))
+	req.Host = testHost
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+
+	var scan db.Scan
+	if err := s.DB.First(&scan).Error; err != nil {
+		t.Fatalf("no scan created for existing repo with branch: %v", err)
+	}
+	if scan.Ref != "2.4.x" {
+		t.Errorf("scan.Ref = %q, want %q", scan.Ref, "2.4.x")
+	}
+}
+
+func TestRepoCreate_existingRepoWithoutBranchDoesNotEnqueue(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	s.DB.Create(&db.Skill{Name: "triage", Active: true, Source: "test", Body: "test", OutputFile: "report.json", OutputKind: "freeform", Version: 1})
+	s.DB.Create(&db.Repository{URL: "https://github.com/apache/httpd.git", Name: "httpd"})
+
+	form := url.Values{"url": {"https://github.com/apache/httpd"}}
+	req := httptest.NewRequest("POST", "/repositories", strings.NewReader(form.Encode()))
+	req.Host = testHost
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+
+	var count int64
+	s.DB.Model(&db.Scan{}).Count(&count)
+	if count != 0 {
+		t.Errorf("expected no scan for plain re-add, got %d", count)
+	}
+}

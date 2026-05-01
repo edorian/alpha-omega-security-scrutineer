@@ -91,6 +91,10 @@ type Scan struct {
 	FindingID *uint  `gorm:"index"`
 	APIToken  string `gorm:"index"`
 
+	// Ref is the git ref (branch, tag, commit) to checkout after cloning.
+	// Empty means the repository's default branch (origin/HEAD).
+	Ref string
+
 	// SubPath scopes the scan's code analysis to a sub-folder within the
 	// clone (e.g. airflow-core inside apache/airflow). Empty means the
 	// repo root. Skills that walk files honour this through

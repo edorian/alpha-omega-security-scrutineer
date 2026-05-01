@@ -23,6 +23,10 @@
     <dt class="text-muted-foreground">Model</dt>
     <dd>{{if .Model}}{{.Model}}{{else}}-{{end}}</dd>
   </div>
+  {{if .Ref}}<div>
+    <dt class="text-muted-foreground">Ref</dt>
+    <dd>{{.Ref}}</dd>
+  </div>{{end}}
   <div>
     <dt class="text-muted-foreground">Commit</dt>
     <dd><code>{{if .Commit}}{{short .Commit}}{{else}}-{{end}}</code></dd>

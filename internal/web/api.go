@@ -187,9 +187,13 @@ func (s *Server) apiRunSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Model string `json:"model"`
+		Ref   string `json:"ref"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	scanID, err := s.enqueueSkill(r.Context(), uint(id), skill.ID, body.Model)
+	scanID, err := s.enqueueSkillWith(r.Context(), uint(id), skill.ID, ScanOpts{
+		Model: body.Model,
+		Ref:   body.Ref,
+	})
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -301,7 +305,7 @@ func (s *Server) apiListSkills(w http.ResponseWriter, r *http.Request) {
 }
 
 func scanSummary(sc db.Scan) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"id":            sc.ID,
 		"repository_id": sc.RepositoryID,
 		"kind":          sc.Kind,
@@ -314,6 +318,10 @@ func scanSummary(sc db.Scan) map[string]any {
 		"finished_at":   sc.FinishedAt,
 		"error":         sc.Error,
 	}
+	if sc.Ref != "" {
+		m["ref"] = sc.Ref
+	}
+	return m
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
