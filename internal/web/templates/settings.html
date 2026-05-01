@@ -1,0 +1,145 @@
+{{template "head" .}}
+
+<h1 class="text-2xl font-semibold mb-6">Settings</h1>
+
+<div class="grid gap-6">
+
+<section class="card">
+  <header><h2>Theme</h2></header>
+  <section>
+    <div class="flex flex-wrap gap-3">
+      {{$current := .Theme}}
+      {{range .Themes}}
+      <form method="post" action="/settings/theme" hx-post="/settings/theme" hx-swap="none">
+        <input type="hidden" name="theme" value="{{.}}">
+        <button type="submit" class="rounded-lg border px-4 py-3 text-center hover:bg-muted transition-colors cursor-pointer {{if eq . $current}}border-primary bg-muted/50{{else}}border-transparent{{end}}">
+          <div class="flex justify-center gap-1 mb-2">
+            <span class="w-4 h-4 rounded-full theme-swatch-primary" data-swatch="{{.}}"></span>
+            <span class="w-4 h-4 rounded-full theme-swatch-accent" data-swatch="{{.}}"></span>
+            <span class="w-4 h-4 rounded-full theme-swatch-muted" data-swatch="{{.}}"></span>
+          </div>
+          <span class="text-sm font-medium">{{.}}</span>
+        </button>
+      </form>
+      {{end}}
+    </div>
+  </section>
+</section>
+
+<section class="card">
+  <header><h2>Color scheme</h2></header>
+  <section>
+    <div class="flex flex-wrap gap-3">
+      {{$scheme := .ColorScheme}}
+      {{range $val := list "system" "light" "dark"}}
+      <form method="post" action="/settings/color-scheme" hx-post="/settings/color-scheme" hx-swap="none">
+        <input type="hidden" name="color_scheme" value="{{$val}}">
+        <button type="submit" class="rounded-lg border px-4 py-3 text-center hover:bg-muted transition-colors cursor-pointer {{if eq $val $scheme}}border-primary bg-muted/50{{else}}border-transparent{{end}}">
+          <span class="text-sm font-medium">{{$val}}</span>
+        </button>
+      </form>
+      {{end}}
+    </div>
+  </section>
+</section>
+
+<section class="card">
+  <header><h2>Default model</h2></header>
+  <section>
+    <div class="flex flex-wrap gap-3">
+      {{$model := .DefaultModel}}
+      {{range .Models}}
+      <form method="post" action="/settings/model" hx-post="/settings/model" hx-swap="none">
+        <input type="hidden" name="model" value="{{.ID}}">
+        <button type="submit" class="rounded-lg border px-4 py-3 text-center hover:bg-muted transition-colors cursor-pointer {{if eq .ID $model}}border-primary bg-muted/50{{else}}border-transparent{{end}}">
+          <span class="text-sm font-medium">{{.Name}}</span>
+        </button>
+      </form>
+      {{end}}
+    </div>
+  </section>
+</section>
+
+<section class="card">
+  <header><h2>System</h2></header>
+  <section>
+    <div class="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-3 text-sm">
+      <div class="bg-muted/50 rounded-lg px-3 py-2">
+        <div class="text-muted-foreground text-xs">Repositories</div>
+        <div class="font-medium text-lg">{{bignum .Stats.Repos}}</div>
+      </div>
+      <div class="bg-muted/50 rounded-lg px-3 py-2">
+        <div class="text-muted-foreground text-xs">Scans</div>
+        <div class="font-medium text-lg">{{bignum .Stats.Scans}}</div>
+      </div>
+      <div class="bg-muted/50 rounded-lg px-3 py-2">
+        <div class="text-muted-foreground text-xs">Findings</div>
+        <div class="font-medium text-lg">{{bignum .Stats.Findings}}</div>
+      </div>
+      <div class="bg-muted/50 rounded-lg px-3 py-2">
+        <div class="text-muted-foreground text-xs">Packages</div>
+        <div class="font-medium text-lg">{{bignum .Stats.Packages}}</div>
+      </div>
+      <div class="bg-muted/50 rounded-lg px-3 py-2">
+        <div class="text-muted-foreground text-xs">Advisories</div>
+        <div class="font-medium text-lg">{{bignum .Stats.Advisories}}</div>
+      </div>
+      <div class="bg-muted/50 rounded-lg px-3 py-2">
+        <div class="text-muted-foreground text-xs">Maintainers</div>
+        <div class="font-medium text-lg">{{bignum .Stats.Maintainers}}</div>
+      </div>
+      <div class="bg-muted/50 rounded-lg px-3 py-2">
+        <div class="text-muted-foreground text-xs">Skills</div>
+        <div class="font-medium text-lg">{{bignum .Stats.Skills}}</div>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-3 text-sm mt-3">
+      <div class="bg-muted/50 rounded-lg px-3 py-2">
+        <div class="text-muted-foreground text-xs">Concurrency</div>
+        <div class="font-medium text-lg">{{.Concurrency}}</div>
+      </div>
+      <div class="bg-muted/50 rounded-lg px-3 py-2">
+        <div class="text-muted-foreground text-xs">Database size</div>
+        <div class="font-medium text-lg">{{bytes .DBSize}}</div>
+      </div>
+      <div class="bg-muted/50 rounded-lg px-3 py-2 col-span-2">
+        <div class="text-muted-foreground text-xs">Database path</div>
+        <div class="font-mono text-sm truncate" title="{{.DBPath}}">{{.DBPath}}</div>
+      </div>
+      <div class="bg-muted/50 rounded-lg px-3 py-2 col-span-2">
+        <div class="text-muted-foreground text-xs">Work directory</div>
+        <div class="font-mono text-sm truncate" title="{{.WorkDir}}">{{.WorkDir}}</div>
+      </div>
+    </div>
+  </section>
+</section>
+
+</div>
+
+<style>
+  .theme-swatch-primary[data-swatch="claude"]          { background: oklch(0.6171 0.1375 39.0427); }
+  .theme-swatch-accent[data-swatch="claude"]           { background: oklch(0.9245 0.0138 92.9892); }
+  .theme-swatch-muted[data-swatch="claude"]            { background: oklch(0.9341 0.0153 90.2390); }
+
+  .theme-swatch-primary[data-swatch="ocean-breeze"]    { background: oklch(0.72 0.19 149.58); }
+  .theme-swatch-accent[data-swatch="ocean-breeze"]     { background: oklch(0.95 0.05 163.05); }
+  .theme-swatch-muted[data-swatch="ocean-breeze"]      { background: oklch(0.97 0 264.54); }
+
+  .theme-swatch-primary[data-swatch="catppuccin"]      { background: oklch(0.55 0.25 297.02); }
+  .theme-swatch-accent[data-swatch="catppuccin"]       { background: oklch(0.68 0.14 235.38); }
+  .theme-swatch-muted[data-swatch="catppuccin"]        { background: oklch(0.91 0.01 264.51); }
+
+  .theme-swatch-primary[data-swatch="sunset-horizon"]  { background: oklch(0.74 0.16 34.71); }
+  .theme-swatch-accent[data-swatch="sunset-horizon"]   { background: oklch(0.83 0.11 58); }
+  .theme-swatch-muted[data-swatch="sunset-horizon"]    { background: oklch(0.97 0.02 39.4); }
+
+  .theme-swatch-primary[data-swatch="midnight-bloom"]  { background: oklch(0.57 0.2 283.08); }
+  .theme-swatch-accent[data-swatch="midnight-bloom"]   { background: oklch(0.65 0.06 117.43); }
+  .theme-swatch-muted[data-swatch="midnight-bloom"]    { background: oklch(0.82 0.02 91.62); }
+
+  .theme-swatch-primary[data-swatch="northern-lights"] { background: oklch(0.65 0.15 150.31); }
+  .theme-swatch-accent[data-swatch="northern-lights"]  { background: oklch(0.83 0.11 211.96); }
+  .theme-swatch-muted[data-swatch="northern-lights"]   { background: oklch(0.88 0.03 98.1); }
+</style>
+
+{{template "foot" .}}

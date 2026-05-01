@@ -26,7 +26,7 @@ func validateOutputFile(f string) bool {
 func (s *Server) skillsList(w http.ResponseWriter, r *http.Request) {
 	var skills []db.Skill
 	s.DB.Order("active desc, name asc").Find(&skills)
-	s.render(w, "skills.html", map[string]any{"Skills": skills})
+	s.render(w, r, "skills.html", map[string]any{"Skills": skills})
 }
 
 func (s *Server) skillShow(w http.ResponseWriter, r *http.Request) {
@@ -36,11 +36,11 @@ func (s *Server) skillShow(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.render(w, "skill_show.html", map[string]any{"S": skill})
+	s.render(w, r, "skill_show.html", map[string]any{"S": skill})
 }
 
 func (s *Server) skillNew(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "skill_form.html", map[string]any{
+	s.render(w, r, "skill_form.html", map[string]any{
 		"S":      db.Skill{Active: true, Source: "ui"},
 		"Action": "/skills",
 		"Verb":   "Create",
@@ -54,7 +54,7 @@ func (s *Server) skillEdit(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.render(w, "skill_form.html", map[string]any{
+	s.render(w, r, "skill_form.html", map[string]any{
 		"S":      skill,
 		"Action": "/skills/" + strconv.Itoa(int(skill.ID)),
 		"Verb":   "Save",

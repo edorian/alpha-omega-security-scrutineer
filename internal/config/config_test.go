@@ -141,3 +141,32 @@ func TestLoad_rejectsUnparseable(t *testing.T) {
 		t.Error("expected parse error")
 	}
 }
+
+func TestValidateTheme(t *testing.T) {
+	for _, name := range []string{"", "claude", "ocean-breeze", "catppuccin", "sunset-horizon", "midnight-bloom", "northern-lights"} {
+		if err := ValidateTheme(name); err != nil {
+			t.Errorf("ValidateTheme(%q) = %v, want nil", name, err)
+		}
+	}
+	if err := ValidateTheme("nope"); err == nil {
+		t.Error("expected error for unknown theme")
+	}
+}
+
+func TestLoad_rejectsInvalidTheme(t *testing.T) {
+	path := write(t, "theme: nope\n")
+	if _, err := Load(path); err == nil {
+		t.Error("expected error for invalid theme value")
+	}
+}
+
+func TestLoad_parsesTheme(t *testing.T) {
+	path := write(t, "theme: catppuccin\n")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Theme != "catppuccin" {
+		t.Errorf("theme=%q, want catppuccin", c.Theme)
+	}
+}

@@ -26,8 +26,9 @@ type Payload struct {
 }
 
 type Queue struct {
-	q      *goqite.Queue
-	runner *jobs.Runner
+	q           *goqite.Queue
+	runner      *jobs.Runner
+	Concurrency int
 }
 
 const (
@@ -56,7 +57,7 @@ func New(sqldb *sql.DB, log *slog.Logger, concurrency int) (*Queue, error) {
 		PollInterval: time.Second,
 		Extend:       visibilityTimeout,
 	})
-	return &Queue{q: q, runner: r}, nil
+	return &Queue{q: q, runner: r, Concurrency: concurrency}, nil
 }
 
 func (q *Queue) Register(name string, fn jobs.Func) {

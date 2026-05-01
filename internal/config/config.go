@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -50,6 +51,9 @@ type Config struct {
 	// the value is passed as ANTHROPIC_BASE_URL to the claude-code process.
 	// Falls back to the ANTHROPIC_BASE_URL environment variable if empty.
 	AnthropicBaseURL string `yaml:"anthropic_base_url"`
+	// Theme selects the colour scheme: "claude" (default), "ocean-breeze",
+	// "catppuccin", "sunset-horizon", "midnight-bloom", or "northern-lights".
+	Theme string `yaml:"theme"`
 }
 
 // ParseScanTimeout validates and parses a scan_timeout string. Empty
@@ -88,6 +92,18 @@ type Model struct {
 	ID   string `yaml:"id"`
 }
 
+// Themes lists every valid theme name.
+var Themes = []string{"claude", "ocean-breeze", "catppuccin", "sunset-horizon", "midnight-bloom", "northern-lights"}
+
+// ValidateTheme returns an error when s is not a known theme name.
+// Empty is valid (caller keeps the default).
+func ValidateTheme(s string) error {
+	if s == "" || slices.Contains(Themes, s) {
+		return nil
+	}
+	return fmt.Errorf("theme: unknown %q", s)
+}
+
 // Load reads a YAML config from path. Returns (nil, nil) when the file
 // does not exist and the caller passed "" or DefaultPath — making config
 // fully opt-in. Explicit paths that don't exist are an error.
@@ -111,6 +127,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if _, err := ParseScanTimeout(c.ScanTimeout); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if err := ValidateTheme(c.Theme); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	return &c, nil

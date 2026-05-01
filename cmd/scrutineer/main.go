@@ -142,6 +142,9 @@ func (f *flags) merge(cfg *config.Config) {
 	if cfg.DefaultModel != "" {
 		web.SetDefaultModel(cfg.DefaultModel)
 	}
+	if cfg.Theme != "" {
+		web.SetTheme(cfg.Theme)
+	}
 }
 
 func (f *flags) fullClone() bool { return f.cloneMode == "full" }
