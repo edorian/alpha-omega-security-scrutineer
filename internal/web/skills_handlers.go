@@ -2,11 +2,26 @@ package web
 
 import (
 	"net/http"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"scrutineer/internal/db"
 )
+
+var skillNameRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+func validateSkillName(name string) bool {
+	return skillNameRE.MatchString(name)
+}
+
+func validateOutputFile(f string) bool {
+	if f == "" {
+		return true
+	}
+	return f == filepath.Base(f) && filepath.IsLocal(f) && !strings.Contains(f, "..")
+}
 
 func (s *Server) skillsList(w http.ResponseWriter, r *http.Request) {
 	var skills []db.Skill
@@ -66,6 +81,14 @@ func (s *Server) skillCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name and description are required", http.StatusBadRequest)
 		return
 	}
+	if !validateSkillName(skill.Name) {
+		http.Error(w, "name must be lowercase alphanumeric with hyphens (e.g. my-skill-1)", http.StatusBadRequest)
+		return
+	}
+	if !validateOutputFile(skill.OutputFile) {
+		http.Error(w, "output_file must be a plain filename with no path separators", http.StatusBadRequest)
+		return
+	}
 	if err := s.DB.Create(&skill).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -91,6 +114,14 @@ func (s *Server) skillUpdate(w http.ResponseWriter, r *http.Request) {
 	skill.OutputKind = strings.TrimSpace(r.FormValue("output_kind"))
 	skill.SchemaJSON = r.FormValue("schema_json")
 	skill.Active = r.FormValue("active") == "on"
+	if !validateSkillName(skill.Name) {
+		http.Error(w, "name must be lowercase alphanumeric with hyphens (e.g. my-skill-1)", http.StatusBadRequest)
+		return
+	}
+	if !validateOutputFile(skill.OutputFile) {
+		http.Error(w, "output_file must be a plain filename with no path separators", http.StatusBadRequest)
+		return
+	}
 	skill.Version++
 	if err := s.DB.Save(&skill).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

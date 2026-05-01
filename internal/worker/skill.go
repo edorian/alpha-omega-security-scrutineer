@@ -78,6 +78,9 @@ func (w *Worker) doSkill(ctx context.Context, scan *db.Scan, emit func(Event)) (
 	// successful completion; failed/cancelled dirs are left so the
 	// operator can inspect what the skill saw.
 	workRoot := w.workRoot(scan.ID)
+	if err := validateSkillPaths(skill.Name, skill.OutputFile); err != nil {
+		return "", err
+	}
 	skillDir := filepath.Join(workRoot, ".claude", "skills", skill.Name)
 	if err := stageSkill(&skill, skillDir); err != nil {
 		return "", fmt.Errorf("stage skill: %w", err)
@@ -267,6 +270,16 @@ func (w *Worker) parseMaintainersOutput(scan *db.Scan, report string, emit func(
 		_ = w.DB.Model(&repo).Association("Maintainers").Replace(linked)
 	}
 	emit(Event{Kind: KindText, Text: fmt.Sprintf("identified %d maintainer(s)", len(result.Maintainers))})
+	return nil
+}
+
+func validateSkillPaths(name, outputFile string) error {
+	if !filepath.IsLocal(name) || strings.Contains(name, "/") {
+		return fmt.Errorf("skill name %q contains path separators", name)
+	}
+	if outputFile != "" && (outputFile != filepath.Base(outputFile) || !filepath.IsLocal(outputFile)) {
+		return fmt.Errorf("skill output_file %q contains path separators", outputFile)
+	}
 	return nil
 }
 

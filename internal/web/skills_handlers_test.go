@@ -65,6 +65,74 @@ func TestSkillsCreateAndShow(t *testing.T) {
 	}
 }
 
+func TestSkillCreate_rejectsTraversalName(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	h := s.Handler()
+
+	for _, name := range []string{"../../etc", "a/b", "A_B", "has spaces", "..", "../x"} {
+		form := url.Values{
+			"name":        {name},
+			"description": {"d"},
+			"body":        {"b"},
+		}
+		req := localReq("POST", "/skills")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Body = httptest.NewRequest("POST", "/skills", strings.NewReader(form.Encode())).Body
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != 400 {
+			t.Errorf("name=%q: got status %d, want 400", name, w.Code)
+		}
+	}
+}
+
+func TestSkillCreate_rejectsTraversalOutputFile(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	h := s.Handler()
+
+	for _, of := range []string{"../scrutineer.db", "../../etc/passwd", "sub/report.json"} {
+		form := url.Values{
+			"name":        {"good-name"},
+			"description": {"d"},
+			"body":        {"b"},
+			"output_file": {of},
+		}
+		req := localReq("POST", "/skills")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Body = httptest.NewRequest("POST", "/skills", strings.NewReader(form.Encode())).Body
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != 400 {
+			t.Errorf("output_file=%q: got status %d, want 400", of, w.Code)
+		}
+	}
+}
+
+func TestSkillCreate_acceptsValidNames(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	h := s.Handler()
+
+	for _, name := range []string{"triage", "my-skill", "scan-2"} {
+		form := url.Values{
+			"name":        {name},
+			"description": {"d"},
+			"body":        {"b"},
+			"output_file": {"report.json"},
+		}
+		req := localReq("POST", "/skills")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Body = httptest.NewRequest("POST", "/skills", strings.NewReader(form.Encode())).Body
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != 303 {
+			t.Errorf("name=%q: got status %d, want 303; body=%s", name, w.Code, w.Body)
+		}
+	}
+}
+
 func TestSkillRetry_preservesSkillID(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()

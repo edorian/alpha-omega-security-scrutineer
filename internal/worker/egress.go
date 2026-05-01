@@ -79,9 +79,10 @@ var DefaultEgressAllow = []string{
 // the proxy listens on all interfaces so the docker bridge can reach it,
 // and the token stops it being an open relay on the LAN.
 type EgressProxy struct {
-	Allow []string
-	Token string
-	Log   *slog.Logger
+	Allow   []string
+	Token   string
+	APIPort string // only this port is allowed for HostGatewayAlias
+	Log     *slog.Logger
 
 	transport *http.Transport
 	once      sync.Once
@@ -137,6 +138,11 @@ func (p *EgressProxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "egress to "+host+" is not on the allowlist", http.StatusForbidden)
 		return
 	}
+	if strings.EqualFold(host, HostGatewayAlias) && p.APIPort != "" && port != p.APIPort {
+		p.Log.Warn("egress denied", "method", "CONNECT", "host", host, "port", port, "allowed_port", p.APIPort)
+		http.Error(w, "egress to "+host+" is only allowed on port "+p.APIPort, http.StatusForbidden)
+		return
+	}
 	upstream, err := net.DialTimeout("tcp", dialTarget(host, port), egressDialTimeout)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -167,6 +173,11 @@ func (p *EgressProxy) serveForward(w http.ResponseWriter, r *http.Request) {
 	if !HostAllowed(p.Allow, host) {
 		p.Log.Warn("egress denied", "method", r.Method, "host", host)
 		http.Error(w, "egress to "+host+" is not on the allowlist", http.StatusForbidden)
+		return
+	}
+	if strings.EqualFold(host, HostGatewayAlias) && p.APIPort != "" && port != p.APIPort {
+		p.Log.Warn("egress denied", "method", r.Method, "host", host, "port", port, "allowed_port", p.APIPort)
+		http.Error(w, "egress to "+host+" is only allowed on port "+p.APIPort, http.StatusForbidden)
 		return
 	}
 	out := r.Clone(r.Context())
