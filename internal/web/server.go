@@ -792,11 +792,6 @@ var severityOrder = `CASE severity
 	WHEN 'Critical' THEN 0 WHEN 'High' THEN 1
 	WHEN 'Medium' THEN 2 WHEN 'Low' THEN 3 ELSE 4 END`
 
-// scanStatusOrder floats active work to the top of the scans index so the
-// operator sees what is in flight before the backlog of completed runs.
-var scanStatusOrder = `CASE scans.status
-	WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END`
-
 func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 	q := s.DB.Model(&db.Finding{})
 	sev := r.URL.Query().Get("severity")
@@ -1212,7 +1207,7 @@ func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 		q = q.Joins("Repository").Order("`Repository`.name, scans.id desc")
 	default:
 		sort = defaultSort
-		q = q.Order(scanStatusOrder).Order("scans.id desc")
+		q = q.Order("status_priority, scans.id desc")
 	}
 
 	var total int64
@@ -1623,15 +1618,16 @@ func (s *Server) enqueueSkillWith(ctx context.Context, repoID, skillID uint, opt
 		opts.Model = DefaultModel()
 	}
 	scan := db.Scan{
-		RepositoryID: repoID,
-		Kind:         worker.JobSkill,
-		Status:       db.ScanQueued,
-		Model:        opts.Model,
-		SkillID:      &skillID,
-		FindingID:    opts.FindingID,
-		SubPath:      opts.SubPath,
-		Ref:          opts.Ref,
-		APIToken:     NewAPIToken(),
+		RepositoryID:   repoID,
+		Kind:           worker.JobSkill,
+		Status:         db.ScanQueued,
+		StatusPriority: db.StatusPriorityFor(db.ScanQueued),
+		Model:          opts.Model,
+		SkillID:        &skillID,
+		FindingID:      opts.FindingID,
+		SubPath:        opts.SubPath,
+		Ref:            opts.Ref,
+		APIToken:       NewAPIToken(),
 	}
 	if err := s.DB.Create(&scan).Error; err != nil {
 		return 0, err
@@ -1716,8 +1712,11 @@ func buildKnownURLs(gdb *gorm.DB) map[string]uint {
 
 func buildKnownPURLs(gdb *gorm.DB) map[string]uint {
 	m := map[string]uint{}
-	var rows []db.Package
-	gdb.Find(&rows)
+	var rows []struct {
+		PURL         string
+		RepositoryID uint
+	}
+	gdb.Model(&db.Package{}).Select("p_url, repository_id").Find(&rows)
 	for _, p := range rows {
 		m[p.PURL] = p.RepositoryID
 		if base, _, ok := strings.Cut(p.PURL, "?"); ok {

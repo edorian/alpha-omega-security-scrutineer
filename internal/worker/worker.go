@@ -118,6 +118,7 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 
 		now := time.Now()
 		scan.Status = db.ScanRunning
+		scan.StatusPriority = db.StatusPriorityFor(db.ScanRunning)
 		scan.StartedAt = &now
 		scan.Log = ""
 		scan.Error = ""
@@ -161,6 +162,7 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 			scan.Status = db.ScanDone
 			scan.Report = report
 		}
+		scan.StatusPriority = db.StatusPriorityFor(scan.Status)
 		if saveErr := w.DB.Save(&scan).Error; saveErr != nil {
 			return saveErr
 		}

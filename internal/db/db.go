@@ -91,6 +91,11 @@ type Scan struct {
 	FindingID *uint  `gorm:"index"`
 	APIToken  string `gorm:"index"`
 
+	// StatusPriority is a denormalised sort key so the scans index can use
+	// an index instead of evaluating a CASE on every row. 0 = running,
+	// 1 = queued, 2 = everything else. Set by StatusPriorityFor().
+	StatusPriority int
+
 	// Ref is the git ref (branch, tag, commit) to checkout after cloning.
 	// Empty means the repository's default branch (origin/HEAD).
 	Ref string
@@ -486,6 +491,17 @@ func (s ScanStatus) Terminal() bool {
 	return s == ScanDone || s == ScanFailed || s == ScanCancelled
 }
 
+func StatusPriorityFor(s ScanStatus) int {
+	switch s {
+	case ScanRunning:
+		return 0
+	case ScanQueued:
+		return 1
+	default:
+		return 2 //nolint:mnd
+	}
+}
+
 func Open(dsn string) (*gorm.DB, error) {
 	cfg := &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
@@ -508,6 +524,7 @@ func Open(dsn string) (*gorm.DB, error) {
 	); err != nil {
 		return nil, fmt.Errorf("automigrate: %w", err)
 	}
+	gdb.Exec(`CREATE INDEX IF NOT EXISTS idx_scans_priority_id ON scans (status_priority, id DESC)`)
 	return gdb, nil
 }
 
@@ -604,6 +621,12 @@ type Subproject struct {
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+func BackfillStatusPriority(gdb *gorm.DB) {
+	gdb.Exec(`UPDATE scans SET status_priority = 0 WHERE status = 'running' AND (status_priority IS NULL OR status_priority != 0)`)
+	gdb.Exec(`UPDATE scans SET status_priority = 1 WHERE status = 'queued' AND (status_priority IS NULL OR status_priority != 1)`)
+	gdb.Exec(`UPDATE scans SET status_priority = 2 WHERE status NOT IN ('running', 'queued') AND (status_priority IS NULL OR status_priority != 2)`)
 }
 
 // BackfillFindingRepository copies Scan.RepositoryID onto Finding rows

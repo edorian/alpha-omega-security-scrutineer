@@ -1666,7 +1666,7 @@ func TestJobs_defaultSortFloatsActiveFirst(t *testing.T) {
 	// Created in id order: done, running, queued. Default sort should
 	// surface running, then queued, then done regardless of id.
 	mk := func(st db.ScanStatus) uint {
-		sc := db.Scan{RepositoryID: repo.ID, Kind: "skill", SkillName: "x", Status: st}
+		sc := db.Scan{RepositoryID: repo.ID, Kind: "skill", SkillName: "x", Status: st, StatusPriority: db.StatusPriorityFor(st)}
 		s.DB.Create(&sc)
 		return sc.ID
 	}
