@@ -13,6 +13,19 @@ import (
 
 const dirPerm = 0o755
 
+// RepoUnreachableError is returned when git clone/fetch fails because the
+// remote is unreachable (deleted, private, wrong URL, network error).
+type RepoUnreachableError struct {
+	URL string
+	Err error
+}
+
+func (e *RepoUnreachableError) Error() string {
+	return fmt.Sprintf("repository unreachable %s: %s", e.URL, e.Err)
+}
+
+func (e *RepoUnreachableError) Unwrap() error { return e.Err }
+
 // ensureClone returns the path to an up-to-date clone of repo.URL under
 // the given work root. fullClone selects between --depth 1 (false, the
 // default) and full history (true). Clones on first call; fetches +
@@ -26,7 +39,7 @@ func ensureClone(ctx context.Context, repo db.Repository, work string, fullClone
 		return "", err
 	}
 	if err := cloneOrFetch(ctx, repo.URL, src, fullClone, ref, emit); err != nil {
-		return "", fmt.Errorf("clone: %w", err)
+		return "", &RepoUnreachableError{URL: repo.URL, Err: err}
 	}
 	return src, nil
 }

@@ -92,6 +92,7 @@
         {{if .Repo.PushedAt}}<span class="badge-outline"><i data-lucide="clock"></i>pushed {{since .Repo.PushedAt}}</span>{{end}}
         {{if gt .TotalCost 0.0}}<span class="badge-outline" data-tooltip="Total scan spend on this repository"><i data-lucide="coins"></i>{{usd .TotalCost}}</span>{{end}}
         {{if .Repo.Archived}}<span class="badge-destructive"><i data-lucide="archive"></i>archived</span>{{end}}
+        {{if .Repo.CloneError}}<span class="badge-destructive" data-tooltip="{{.Repo.CloneError}}"><i data-lucide="wifi-off"></i>unreachable</span>{{end}}
       </div>
     {{else}}
       <p class="text-muted-foreground text-sm mb-6">Metadata not fetched yet.</p>

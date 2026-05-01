@@ -46,6 +46,11 @@ type Repository struct {
 	// it from the repo page.
 	DisclosureChannel string
 
+	// CloneError is set when the last clone/fetch attempt failed (repo
+	// deleted, made private, wrong URL). Non-empty means the repo is
+	// currently unreachable. Cleared on next successful clone.
+	CloneError string
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -108,8 +109,12 @@ func (w *Worker) doSkill(ctx context.Context, scan *db.Scan, emit func(Event)) (
 	res, err := w.Runner.RunSkill(ctx, sj, emit)
 	scan.Commit = res.Commit
 	if err != nil {
+		if report, ok := w.handleCloneError(scan, err, emit); ok {
+			return report, nil
+		}
 		return res.Report, err
 	}
+	w.clearCloneError(scan)
 
 	if res.Report == "" {
 		return res.Report, nil
@@ -157,6 +162,25 @@ func (w *Worker) doSkill(ctx context.Context, scan *db.Scan, emit func(Event)) (
 		}
 	}
 	return res.Report, nil
+}
+
+func (w *Worker) handleCloneError(scan *db.Scan, err error, emit func(Event)) (string, bool) {
+	var ure *RepoUnreachableError
+	if !errors.As(err, &ure) {
+		return "", false
+	}
+	w.DB.Model(&db.Repository{}).Where("id = ?", scan.RepositoryID).
+		Update("clone_error", ure.Error())
+	emit(Event{Kind: KindText, Text: "repository unreachable, flagging"})
+	report := fmt.Sprintf(`{"error":"repository unreachable","detail":%q}`, ure.Error())
+	return report, true
+}
+
+func (w *Worker) clearCloneError(scan *db.Scan) {
+	if scan.Repository.CloneError != "" {
+		w.DB.Model(&db.Repository{}).Where("id = ?", scan.RepositoryID).
+			Update("clone_error", "")
+	}
 }
 
 // parseFindingsOutput feeds the existing spec-deep parser so skill-driven

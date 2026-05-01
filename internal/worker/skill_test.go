@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -140,6 +141,98 @@ func TestDoSkill_maintainersKind(t *testing.T) {
 	gdb.Preload("Maintainers").First(&fresh, repo.ID)
 	if len(fresh.Maintainers) != 2 {
 		t.Errorf("repo linked to %d maintainers, want 2", len(fresh.Maintainers))
+	}
+}
+
+func TestDoSkill_cloneErrorFlagsRepo(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "ce.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://example.com/gone", Name: "gone"}
+	gdb.Create(&repo)
+	skill := db.Skill{
+		Name: "metadata", Description: "d", Body: "b",
+		OutputFile: "report.json", OutputKind: "freeform",
+		Version: 1, Active: true, Source: "ui",
+	}
+	gdb.Create(&skill)
+	scan := db.Scan{
+		RepositoryID: repo.ID, Kind: JobSkill,
+		Status: db.ScanQueued, Model: "fake", SkillID: &skill.ID,
+	}
+	gdb.Create(&scan)
+
+	cloneErr := &RepoUnreachableError{
+		URL: repo.URL,
+		Err: fmt.Errorf("fatal: repository 'https://example.com/gone' not found"),
+	}
+	w := &Worker{
+		DB:      gdb,
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DataDir: t.TempDir(),
+		Runner:  fakeRunner{skillErr: cloneErr},
+	}
+
+	body, _ := json.Marshal(queue.Payload{ScanID: scan.ID})
+	if err := w.wrap(w.doSkill)(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+
+	var got db.Scan
+	gdb.First(&got, scan.ID)
+	if got.Status != db.ScanDone {
+		t.Errorf("status = %s, want done (err=%q)", got.Status, got.Error)
+	}
+	if !strings.Contains(got.Report, "repository unreachable") {
+		t.Errorf("report should mention unreachable: %q", got.Report)
+	}
+
+	var fresh db.Repository
+	gdb.First(&fresh, repo.ID)
+	if fresh.CloneError == "" {
+		t.Error("repo CloneError should be set after clone failure")
+	}
+}
+
+func TestDoSkill_successClearsCloneError(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "cc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{
+		URL: "https://example.com/back", Name: "back",
+		CloneError: "previously unreachable",
+	}
+	gdb.Create(&repo)
+	skill := db.Skill{
+		Name: "metadata", Description: "d", Body: "b",
+		OutputFile: "report.json", OutputKind: "freeform",
+		Version: 1, Active: true, Source: "ui",
+	}
+	gdb.Create(&skill)
+	scan := db.Scan{
+		RepositoryID: repo.ID, Kind: JobSkill,
+		Status: db.ScanQueued, Model: "fake", SkillID: &skill.ID,
+	}
+	gdb.Create(&scan)
+
+	w := &Worker{
+		DB:      gdb,
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DataDir: t.TempDir(),
+		Runner:  fakeRunner{skillRes: SkillResult{Commit: "abc", Report: "{}"}},
+	}
+
+	body, _ := json.Marshal(queue.Payload{ScanID: scan.ID})
+	if err := w.wrap(w.doSkill)(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+
+	var fresh db.Repository
+	gdb.First(&fresh, repo.ID)
+	if fresh.CloneError != "" {
+		t.Errorf("CloneError should be cleared after success, got %q", fresh.CloneError)
 	}
 }
 
