@@ -1454,8 +1454,8 @@ func (s *Server) repoShow(w http.ResponseWriter, r *http.Request) {
 	var advisories []db.Advisory
 	s.DB.Where("repository_id = ?", repo.ID).Order("cvss_score desc").Find(&advisories)
 
-	knownURLs := buildKnownURLs(s.DB)
-	knownPURLs := buildKnownPURLs(s.DB)
+	knownPURLs := s.lookupKnownPURLs(deps)
+	knownURLs := s.lookupKnownURLs(dependents)
 
 	// Pass repo html_url and commit for location links in threat model
 	tmCommit := ""
@@ -1720,28 +1720,56 @@ func groupDeps(deps []db.Dependency) []DepGroup {
 	return out
 }
 
-func buildKnownURLs(gdb *gorm.DB) map[string]uint {
+func (s *Server) lookupKnownPURLs(deps []DepGroup) map[string]uint {
 	m := map[string]uint{}
-	var rows []db.Repository
-	gdb.Select("id", "url").Find(&rows)
-	for _, r := range rows {
-		m[r.URL] = r.ID
+	if len(deps) == 0 {
+		return m
 	}
-	return m
-}
-
-func buildKnownPURLs(gdb *gorm.DB) map[string]uint {
-	m := map[string]uint{}
+	purls := make([]string, 0, len(deps))
+	for _, d := range deps {
+		if d.PURL != "" {
+			purls = append(purls, d.PURL)
+			if base, _, ok := strings.Cut(d.PURL, "?"); ok {
+				purls = append(purls, base)
+			}
+		}
+	}
+	if len(purls) == 0 {
+		return m
+	}
 	var rows []struct {
 		PURL         string
 		RepositoryID uint
 	}
-	gdb.Model(&db.Package{}).Select("p_url, repository_id").Find(&rows)
-	for _, p := range rows {
-		m[p.PURL] = p.RepositoryID
-		if base, _, ok := strings.Cut(p.PURL, "?"); ok {
-			m[base] = p.RepositoryID
+	s.DB.Model(&db.Package{}).Select("p_url, repository_id").
+		Where("p_url IN ?", purls).Find(&rows)
+	for _, r := range rows {
+		m[r.PURL] = r.RepositoryID
+		if base, _, ok := strings.Cut(r.PURL, "?"); ok {
+			m[base] = r.RepositoryID
 		}
+	}
+	return m
+}
+
+func (s *Server) lookupKnownURLs(dependents []db.Dependent) map[string]uint {
+	m := map[string]uint{}
+	if len(dependents) == 0 {
+		return m
+	}
+	urls := make([]string, 0, len(dependents))
+	for _, d := range dependents {
+		if d.RepositoryURL != "" {
+			urls = append(urls, d.RepositoryURL)
+		}
+	}
+	if len(urls) == 0 {
+		return m
+	}
+	var repos []db.Repository
+	s.DB.Select("id", "url").Where("url IN ?", urls).Find(&repos)
+	for _, r := range repos {
+		m[r.URL] = r.ID
 	}
 	return m
 }

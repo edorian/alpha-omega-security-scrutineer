@@ -41,8 +41,12 @@ func TestKnownPURLsMatchWithAndWithoutQualifiers(t *testing.T) {
 		PURL:         "pkg:gem/bigdecimal",
 	})
 
-	// Simulate what repoShow does to build KnownPURLs
-	knownPURLs := buildKnownPURLs(gdb)
+	srv := &Server{DB: gdb}
+	deps := []DepGroup{
+		{Dependency: db.Dependency{PURL: "pkg:gem/bigdecimal"}},
+		{Dependency: db.Dependency{PURL: "pkg:gem/bigdecimal?repository_url=https://gem.coop"}},
+	}
+	knownPURLs := srv.lookupKnownPURLs(deps)
 
 	// bare PURL should resolve to repo2
 	if rid := knownPURLs["pkg:gem/bigdecimal"]; rid != repo2.ID {
@@ -69,7 +73,13 @@ func TestKnownURLsMatchDependents(t *testing.T) {
 	repo := db.Repository{URL: "https://github.com/ruby/bigdecimal", Name: "bigdecimal"}
 	gdb.Create(&repo)
 
-	knownURLs := buildKnownURLs(gdb)
+	srv := &Server{DB: gdb}
+	dependents := []db.Dependent{
+		{RepositoryURL: "https://github.com/ruby/bigdecimal"},
+		{RepositoryURL: "https://github.com/foo/bar"},
+	}
+	knownURLs := srv.lookupKnownURLs(dependents)
+
 	if rid := knownURLs["https://github.com/ruby/bigdecimal"]; rid != repo.ID {
 		t.Errorf("got repo %d, want %d", rid, repo.ID)
 	}
