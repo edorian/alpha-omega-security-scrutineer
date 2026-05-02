@@ -1680,7 +1680,7 @@ func TestJobs_defaultSortFloatsActiveFirst(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
 	body := w.Body.String()
-	pos := func(id uint) int { return strings.Index(body, fmt.Sprintf(`hx-get="/scans/%d"`, id)) }
+	pos := func(id uint) int { return strings.Index(body, fmt.Sprintf(`/scans/%d"`, id)) }
 	r, q, d := pos(runID), pos(queueID), pos(doneID)
 	if r < 0 || q < 0 || d < 0 {
 		t.Fatalf("scan rows not rendered: running=%d queued=%d done=%d", r, q, d)

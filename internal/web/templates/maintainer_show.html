@@ -50,8 +50,8 @@
         <thead><tr><th>Repository</th><th>Language</th><th>Stars</th></tr></thead>
         <tbody>
         {{range $m.Repositories}}
-          <tr id="repo-{{.ID}}" class="cursor-pointer" hx-get="/repositories/{{.ID}}" hx-push-url="true">
-            <td><a href="/repositories/{{.ID}}" class="font-medium" hx-on:click="event.stopPropagation()">{{trimscheme .URL}}</a></td>
+          <tr id="repo-{{.ID}}">
+            <td><a href="/repositories/{{.ID}}" class="font-medium">{{trimscheme .URL}}</a></td>
             <td class="text-muted-foreground">{{.Languages}}</td>
             <td class="text-muted-foreground">{{if .Stars}}{{bignum .Stars}}{{end}}</td>
           </tr>
@@ -74,10 +74,10 @@
       {{$repos := .Repos}}
       {{range .Findings}}
         {{$repo := index $repos .RepositoryID}}
-        <tr id="finding-{{.ID}}" class="cursor-pointer" hx-get="/findings/{{.ID}}" hx-push-url="true">
+        <tr id="finding-{{.ID}}">
           <td>{{template "severity-badge" .Severity}}</td>
           <td class="min-w-0 whitespace-normal">
-            <a href="/findings/{{.ID}}" class="font-medium" hx-on:click="event.stopPropagation()">{{.Title}}</a>
+            <a href="/findings/{{.ID}}" class="font-medium">{{.Title}}</a>
             <div class="text-xs text-muted-foreground line-clamp-1">{{.Summary}}</div>
           </td>
           <td class="truncate">{{$repo.Name}}</td>

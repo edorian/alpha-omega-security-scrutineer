@@ -53,9 +53,9 @@
     <tbody>
     {{$counts := .FindingCounts}}
     {{range .Maintainers}}
-      <tr id="maintainer-{{.ID}}" class="cursor-pointer" hx-get="/maintainers/{{.ID}}" hx-push-url="true">
+      <tr id="maintainer-{{.ID}}">
         <td>
-          <a href="/maintainers/{{.ID}}" class="font-medium" hx-on:click="event.stopPropagation()">{{.Name}}</a>
+          <a href="/maintainers/{{.ID}}" class="font-medium">{{.Name}}</a>
           {{if .DoNotContact}}<span class="badge-destructive ml-1" data-tooltip="Do not contact">DNC</span>{{end}}
         </td>
         <td class="text-muted-foreground">{{.Login}}</td>

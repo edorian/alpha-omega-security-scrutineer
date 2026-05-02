@@ -79,9 +79,7 @@
   </nav>
 </aside>
 
-<main id="content" class="min-h-screen"
-      hx-history-elt
-      hx-target="#content" hx-select="#content" hx-select-oob="#nav" hx-swap="outerHTML">
+<main id="content" class="min-h-screen">
   <div class="p-4 md:p-6 xl:p-12">
 {{end}}
 
@@ -174,12 +172,12 @@
 {{define "scan-actions"}}
   {{if or (eq (status .Status) "queued") (eq (status .Status) "running")}}
     <form method="post" action="/scans/{{.ID}}/cancel" hx-post="/scans/{{.ID}}/cancel"
-          hx-swap="none" hx-on:click="event.stopPropagation()">
+          hx-swap="none">
       <button type="submit" class="btn-sm-ghost" data-tooltip="Cancel"><i data-lucide="x"></i></button>
     </form>
   {{else if and (or (eq (status .Status) "failed") (eq (status .Status) "cancelled")) .SkillID}}
     <form method="post" action="/scans/{{.ID}}/retry" hx-post="/scans/{{.ID}}/retry"
-          hx-swap="none" hx-on:click="event.stopPropagation()">
+          hx-swap="none">
       <button type="submit" class="btn-sm-ghost" data-tooltip="Retry"><i data-lucide="refresh-cw"></i></button>
     </form>
   {{end}}
