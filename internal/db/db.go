@@ -89,7 +89,7 @@ type Scan struct {
 	// workspace; it is cleared when the scan reaches a terminal state.
 	SkillID      *uint `gorm:"index"`
 	SkillVersion int
-	SkillName    string
+	SkillName    string `gorm:"index"`
 	// FindingID is set when a scan is finding-scoped (verify, patch,
 	// disclose). Skills read it from context.json to know which finding
 	// they are acting on.

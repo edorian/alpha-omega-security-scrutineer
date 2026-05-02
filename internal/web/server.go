@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -42,6 +43,10 @@ type Server struct {
 	// stub the network lookup.
 	resolvePURL func(ctx context.Context, purl string) string
 	resolveSync bool
+
+	skillNamesMu    sync.Mutex
+	skillNamesCache []string
+	skillNamesTTL   time.Time
 }
 
 func New(gdb *gorm.DB, q *queue.Queue, log *slog.Logger, broker *Broker, w *worker.Worker) (*Server, error) {
@@ -1219,9 +1224,7 @@ func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 	q.Preload("Repository").
 		Limit(perPage).Offset((page.N - 1) * perPage).Find(&scans)
 
-	var skillNames []string
-	s.DB.Model(&db.Scan{}).Where("skill_name != ''").Distinct("skill_name").
-		Order("skill_name").Pluck("skill_name", &skillNames)
+	skillNames := s.scanSkillNames()
 
 	anySubPath := false
 	for _, sc := range scans {
@@ -1235,6 +1238,22 @@ func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 		"Skill": skillName, "Status": status, "Sort": sort, "Skills": skillNames,
 		"AnySubPath": anySubPath,
 	})
+}
+
+const skillNamesCacheTTL = 30 * time.Second
+
+func (s *Server) scanSkillNames() []string {
+	s.skillNamesMu.Lock()
+	defer s.skillNamesMu.Unlock()
+	if time.Now().Before(s.skillNamesTTL) {
+		return s.skillNamesCache
+	}
+	var names []string
+	s.DB.Model(&db.Scan{}).Where("skill_name != ''").Distinct("skill_name").
+		Order("skill_name").Pluck("skill_name", &names)
+	s.skillNamesCache = names
+	s.skillNamesTTL = time.Now().Add(skillNamesCacheTTL)
+	return names
 }
 
 func (s *Server) repoCreate(w http.ResponseWriter, r *http.Request) {
