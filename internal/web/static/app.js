@@ -46,6 +46,12 @@
   document.addEventListener('htmx:oobAfterSwap', function () { icons(); highlight(); });
 
   document.addEventListener('click', function (e) {
+    var tr = e.target.closest('.table tbody tr');
+    if (tr && !e.target.closest('a, button, form, input')) {
+      var a = tr.querySelector('a[href]');
+      if (a) { a.click(); return; }
+    }
+
     var tab = e.target.closest('[role="tab"]');
     if (tab && tab.id) history.replaceState(null, '', '#' + tab.id);
 

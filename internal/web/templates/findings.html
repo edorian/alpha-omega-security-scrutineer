@@ -59,10 +59,10 @@
     {{$showSub := .AnySubPath}}
     {{range .Findings}}
       {{$repo := index $repos .RepositoryID}}
-      <tr id="finding-{{.ID}}" class="cursor-pointer" hx-get="/findings/{{.ID}}" hx-push-url="true">
+      <tr id="finding-{{.ID}}">
         <td>{{template "severity-badge" .Severity}}</td>
         <td class="min-w-0 whitespace-normal">
-          <a href="/findings/{{.ID}}" class="font-medium" hx-on:click="event.stopPropagation()">{{.Title}}</a>
+          <a href="/findings/{{.ID}}" class="font-medium">{{.Title}}</a>
           <div class="text-xs text-muted-foreground line-clamp-2">{{.Summary}}</div>
         </td>
         <td>{{template "finding-status" (fstatus .Status)}}</td>

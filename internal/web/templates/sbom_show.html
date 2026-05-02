@@ -153,9 +153,9 @@
       {{$repos := .Repos}}
       {{range .Findings}}
         {{$repo := index $repos .RepositoryID}}
-        <tr id="finding-{{.ID}}" class="cursor-pointer" hx-get="/findings/{{.ID}}" hx-push-url="true">
+        <tr id="finding-{{.ID}}">
           <td>{{template "severity-badge" .Severity}}</td>
-          <td class="min-w-0 whitespace-normal"><a href="/findings/{{.ID}}" class="font-medium" hx-on:click="event.stopPropagation()">{{.Title}}</a></td>
+          <td class="min-w-0 whitespace-normal"><a href="/findings/{{.ID}}" class="font-medium">{{.Title}}</a></td>
           <td class="truncate">{{$repo.Name}}</td>
           <td>{{template "finding-status" (fstatus .Status)}}</td>
           <td class="text-muted-foreground">{{.CWE}}</td>

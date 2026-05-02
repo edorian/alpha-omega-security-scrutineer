@@ -1,4 +1,4 @@
-<div id="repos" hx-get="/repositories?q={{.Q}}&page={{.Page.N}}&language={{.Language}}&sort={{.Sort}}" hx-trigger="every 5s[document.visibilityState==='visible']" hx-target="this" hx-select="#repos" hx-swap="outerHTML">
+<div id="repos">
 <div class="flex items-center justify-end gap-2 mb-4">
   <form method="get" action="/" class="inline-flex">
     <input class="input" type="search" name="q" value="{{.Q}}" placeholder="Search repositories"
@@ -45,9 +45,9 @@
     </thead>
     <tbody>
     {{range .Rows}}
-      <tr id="repo-{{.ID}}" class="cursor-pointer" hx-get="/repositories/{{.ID}}" hx-push-url="true">
+      <tr id="repo-{{.ID}}">
         <td>
-          <a href="/repositories/{{.ID}}" hx-on:click="event.stopPropagation()">{{trimscheme .URL}}</a>
+          <a href="/repositories/{{.ID}}">{{trimscheme .URL}}</a>
           {{if .CloneError}}<span class="badge-destructive ml-1" data-tooltip="{{.CloneError}}"><i data-lucide="wifi-off"></i></span>{{end}}
         </td>
         <td class="text-muted-foreground">{{if .Languages}}{{.Languages}}{{else}}-{{end}}</td>
@@ -56,8 +56,7 @@
         <td>{{template "findings-badge" .FindingsTotal}}</td>
         <td>
           <form method="post" action="/repositories/{{.ID}}/scan"
-                hx-post="/repositories/{{.ID}}/scan" hx-swap="none"
-                hx-on:click="event.stopPropagation()">
+                hx-post="/repositories/{{.ID}}/scan" hx-swap="none">
             <button type="submit" class="btn-sm-outline"><i data-lucide="refresh-cw"></i> Rescan</button>
           </form>
         </td>

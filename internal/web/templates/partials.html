@@ -32,7 +32,7 @@
 {{define "loc-link"}}
   {{$u := locurl .HTMLURL .Commit .Location}}
   {{if $u}}
-    <a href="{{$u}}" target="_blank" rel="noopener" hx-on:click="event.stopPropagation()"
+    <a href="{{$u}}" target="_blank" rel="noopener"
        class="hover:underline"><code class="text-xs break-all">{{.Location}}</code></a>
   {{else}}
     <code class="text-xs break-all">{{.Location}}</code>
