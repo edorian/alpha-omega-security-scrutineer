@@ -74,11 +74,18 @@ func TestParseFindingsOutput_dedupesAcrossScans(t *testing.T) {
 	if f1.Title != "SQLi in users" {
 		t.Errorf("F1 title overwritten by rescan: %q", f1.Title)
 	}
+	if f1.MissedCount != 0 {
+		t.Errorf("F1 reappeared, missed count should be 0, got %d", f1.MissedCount)
+	}
 
-	// F2 untouched.
+	// F2 did not reappear: last-seen stays at s1, missed count bumped.
 	f2 := after2[1]
 	if f2.LastSeenScanID != s1.ID || f2.SeenCount != 1 {
-		t.Errorf("F2 should be unchanged: %+v", f2)
+		t.Errorf("F2 last-seen should be unchanged: %+v", f2)
+	}
+	if f2.MissedCount != 1 || f2.LastMissedScanID != s2.ID {
+		t.Errorf("F2 should be marked not-observed by s2: missed=%d last_missed=%d",
+			f2.MissedCount, f2.LastMissedScanID)
 	}
 
 	// F3 is new from scan 2.
@@ -92,6 +99,12 @@ func TestParseFindingsOutput_dedupesAcrossScans(t *testing.T) {
 	gdb.Where("finding_id = ? AND field = ?", f1.ID, "observed").Find(&hist)
 	if len(hist) != 1 || hist[0].By != "security-deep-dive" {
 		t.Errorf("want one observed history row for F1, got %+v", hist)
+	}
+	// History row for the miss.
+	var miss []db.FindingHistory
+	gdb.Where("finding_id = ? AND field = ?", f2.ID, "not_observed").Find(&miss)
+	if len(miss) != 1 || miss[0].By != "security-deep-dive" {
+		t.Errorf("want one not_observed history row for F2, got %+v", miss)
 	}
 }
 
@@ -161,5 +174,142 @@ func TestParseFindingsOutput_intraScanCollisionCreatesOneRow(t *testing.T) {
 	}
 	if s.FindingsCount != 2 {
 		t.Errorf("scan.FindingsCount should report what the scan found (2), got %d", s.FindingsCount)
+	}
+}
+
+func TestParseFindingsOutput_notObservedScopedToSkillAndSubpath(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://x/r", Name: "r"}
+	gdb.Create(&repo)
+	w := &Worker{DB: gdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	emit := func(Event) {}
+
+	report := `{"findings":[{"id":"F1","title":"x","severity":"High","cwe":"CWE-89","location":"a.rb:1"}]}`
+
+	// security-deep-dive at root finds F1.
+	s1 := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, SkillName: "security-deep-dive",
+		SubPath: "", Status: db.ScanDone, Commit: "abc"}
+	gdb.Create(s1)
+	if err := w.parseFindingsOutput(s1, report, emit); err != nil {
+		t.Fatal(err)
+	}
+
+	// semgrep at root finds nothing. Different skill: must not mark F1 missed.
+	s2 := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, SkillName: "semgrep",
+		SubPath: "", Status: db.ScanDone, Commit: "abc"}
+	gdb.Create(s2)
+	if err := w.parseFindingsOutput(s2, `{"findings":[]}`, emit); err != nil {
+		t.Fatal(err)
+	}
+
+	// security-deep-dive on subpath "pkg/foo" finds nothing. Different
+	// subpath: must not mark F1 missed.
+	s3 := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, SkillName: "security-deep-dive",
+		SubPath: "pkg/foo", Status: db.ScanDone, Commit: "abc"}
+	gdb.Create(s3)
+	if err := w.parseFindingsOutput(s3, `{"findings":[]}`, emit); err != nil {
+		t.Fatal(err)
+	}
+
+	var f db.Finding
+	gdb.First(&f)
+	if f.MissedCount != 0 {
+		t.Errorf("out-of-scope rescans must not mark F1 missed: missed=%d", f.MissedCount)
+	}
+
+	// security-deep-dive at root finds nothing. In scope: F1 missed.
+	s4 := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, SkillName: "security-deep-dive",
+		SubPath: "", Status: db.ScanDone, Commit: "def"}
+	gdb.Create(s4)
+	if err := w.parseFindingsOutput(s4, `{"findings":[]}`, emit); err != nil {
+		t.Fatal(err)
+	}
+
+	gdb.First(&f)
+	if f.MissedCount != 1 || f.LastMissedScanID != s4.ID {
+		t.Errorf("in-scope rescan should mark F1 missed: missed=%d last_missed=%d",
+			f.MissedCount, f.LastMissedScanID)
+	}
+}
+
+func TestParseFindingsOutput_reobservationResetsMissedCount(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://x/r", Name: "r"}
+	gdb.Create(&repo)
+	w := &Worker{DB: gdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	emit := func(Event) {}
+
+	report := `{"findings":[{"id":"F1","title":"x","severity":"High","cwe":"CWE-89","location":"a.rb:1"}]}`
+	mkScan := func(commit string) *db.Scan {
+		s := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, SkillName: "security-deep-dive",
+			Status: db.ScanDone, Commit: commit}
+		gdb.Create(s)
+		return s
+	}
+
+	if err := w.parseFindingsOutput(mkScan("aaa"), report, emit); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.parseFindingsOutput(mkScan("bbb"), `{"findings":[]}`, emit); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.parseFindingsOutput(mkScan("ccc"), `{"findings":[]}`, emit); err != nil {
+		t.Fatal(err)
+	}
+
+	var f db.Finding
+	gdb.First(&f)
+	if f.MissedCount != 2 {
+		t.Fatalf("after two empty rescans MissedCount = %d, want 2", f.MissedCount)
+	}
+
+	// Reappears: missed count resets, seen count is now 2.
+	if err := w.parseFindingsOutput(mkScan("ddd"), report, emit); err != nil {
+		t.Fatal(err)
+	}
+	gdb.First(&f)
+	if f.MissedCount != 0 || f.LastMissedScanID != 0 {
+		t.Errorf("re-observation should reset missed: missed=%d last_missed=%d",
+			f.MissedCount, f.LastMissedScanID)
+	}
+	if f.SeenCount != 2 || f.LastSeenCommit != "ddd" {
+		t.Errorf("seen=%d last_seen_commit=%q, want 2/ddd", f.SeenCount, f.LastSeenCommit)
+	}
+}
+
+func TestParseFindingsOutput_notObservedSkipsClosedFindings(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://x/r", Name: "r"}
+	gdb.Create(&repo)
+	w := &Worker{DB: gdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	emit := func(Event) {}
+
+	report := `{"findings":[{"id":"F1","title":"x","severity":"High","cwe":"CWE-89","location":"a.rb:1"}]}`
+	s1 := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, SkillName: "k", Status: db.ScanDone, Commit: "abc"}
+	gdb.Create(s1)
+	if err := w.parseFindingsOutput(s1, report, emit); err != nil {
+		t.Fatal(err)
+	}
+	gdb.Model(&db.Finding{}).Where("repository_id = ?", repo.ID).Update("status", db.FindingFixed)
+
+	s2 := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, SkillName: "k", Status: db.ScanDone, Commit: "def"}
+	gdb.Create(s2)
+	if err := w.parseFindingsOutput(s2, `{"findings":[]}`, emit); err != nil {
+		t.Fatal(err)
+	}
+
+	var f db.Finding
+	gdb.First(&f)
+	if f.MissedCount != 0 {
+		t.Errorf("closed finding should not accrue missed count: missed=%d", f.MissedCount)
 	}
 }

@@ -65,6 +65,12 @@ Only when `has_code`:
 
 If a skill name comes back `404 skill not found or inactive`, skip it and note which one in your report; the operator may have disabled it on purpose.
 
+## Re-verify reported findings
+
+If this repository has been scanned before there may be findings already reported to the maintainer that have since been fixed upstream. For each of `status=reported` and `status=acknowledged`, fetch `GET {api_base}/repositories/{repository_id}/findings?status={status}` and collect the returned `id` values. For every finding id, enqueue a verify run: `POST {api_base}/findings/{id}/skills/verify/run` with the bearer header and an empty JSON body. Record the ids you enqueued in the `verify` field of your report; if there are none, write an empty list. If the verify endpoint returns `404 skill not found or inactive`, leave `verify` empty and carry on.
+
+Do not verify findings in other states. `new`, `enriched`, `triaged`, and `ready` are handled by the audit skills re-running above; `fixed`, `published`, `rejected`, and `duplicate` are closed.
+
 ## Output
 
 Write `./report.json` as:
@@ -78,6 +84,7 @@ Write `./report.json` as:
   "skipped":   ["semgrep"],
   "gated":     [],
   "already_done": ["metadata"],
+  "verify":    [12, 34],
   "errors":    []
 }
 ```

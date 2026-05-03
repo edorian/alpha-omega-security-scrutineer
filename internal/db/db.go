@@ -313,6 +313,13 @@ type Finding struct {
 	LastSeenScanID uint
 	LastSeenCommit string
 	SeenCount      int
+	// MissedCount/LastMissedScanID track the inverse: consecutive
+	// same-skill rescans of this repo+subpath where the fingerprint did
+	// NOT reappear. Reset to zero on the next re-observation. A non-zero
+	// MissedCount is a hint the finding may have been fixed upstream; it
+	// is not proof since model-driven audits are nondeterministic.
+	MissedCount      int
+	LastMissedScanID uint
 
 	FindingID string // e.g. F1, F2 within the report
 	Sinks     string // comma-joined sink IDs

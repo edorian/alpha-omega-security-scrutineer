@@ -215,9 +215,11 @@ func (w *Worker) parseFindingsOutput(scan *db.Scan, report string, emit func(Eve
 			Order("id").First(&existing).Error
 		if err == nil {
 			if uerr := w.DB.Model(&db.Finding{}).Where("id = ?", existing.ID).Updates(map[string]any{
-				"last_seen_scan_id": scan.ID,
-				"last_seen_commit":  scan.Commit,
-				"seen_count":        existing.SeenCount + 1,
+				"last_seen_scan_id":   scan.ID,
+				"last_seen_commit":    scan.Commit,
+				"seen_count":          existing.SeenCount + 1,
+				"missed_count":        0,
+				"last_missed_scan_id": 0,
 			}).Error; uerr != nil {
 				return fmt.Errorf("update finding %d: %w", existing.ID, uerr)
 			}
@@ -236,9 +238,54 @@ func (w *Worker) parseFindingsOutput(scan *db.Scan, report string, emit func(Eve
 		}
 		created++
 	}
-	emit(Event{Kind: KindText, Text: fmt.Sprintf("parsed %d finding(s): %d new, %d re-observed",
-		len(findings), created, observed)})
+
+	missed := w.markNotObserved(scan, seenThisScan)
+
+	emit(Event{Kind: KindText, Text: fmt.Sprintf("parsed %d finding(s): %d new, %d re-observed, %d not-observed",
+		len(findings), created, observed, missed)})
 	return nil
+}
+
+// markNotObserved bumps MissedCount on open findings that this scan was
+// in scope to re-observe (same repo, same skill, same subpath) but whose
+// fingerprint did not appear in the scan output. Closed findings (fixed,
+// published, rejected, duplicate) are left alone. Returns the number of
+// rows touched so the scan log can report it.
+func (w *Worker) markNotObserved(scan *db.Scan, seen map[string]bool) int {
+	closed := []db.FindingLifecycle{
+		db.FindingFixed, db.FindingPublished, db.FindingRejected, db.FindingDuplicate,
+	}
+	sameSkill := w.DB.Model(&db.Scan{}).Select("id").
+		Where("repository_id = ? AND skill_name = ?", scan.RepositoryID, scan.SkillName)
+	var prior []db.Finding
+	w.DB.Where("repository_id = ? AND sub_path = ?", scan.RepositoryID, scan.SubPath).
+		Where("scan_id IN (?)", sameSkill).
+		Where("scan_id <> ?", scan.ID).
+		Where("status NOT IN ?", closed).
+		Find(&prior)
+
+	missed := 0
+	for _, f := range prior {
+		if seen[f.Fingerprint] {
+			continue
+		}
+		if uerr := w.DB.Model(&db.Finding{}).Where("id = ?", f.ID).Updates(map[string]any{
+			"missed_count":        f.MissedCount + 1,
+			"last_missed_scan_id": scan.ID,
+		}).Error; uerr != nil {
+			w.Log.Error("mark finding not-observed", "finding", f.ID, "err", uerr)
+			continue
+		}
+		_ = w.DB.Create(&db.FindingHistory{
+			FindingID: f.ID,
+			Field:     "not_observed",
+			NewValue:  fmt.Sprintf("scan %d @ %s", scan.ID, scan.Commit),
+			Source:    db.SourceTool,
+			By:        scan.SkillName,
+		}).Error
+		missed++
+	}
+	return missed
 }
 
 // parseMaintainersOutput upserts Maintainer rows and links them to the
