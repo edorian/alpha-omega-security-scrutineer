@@ -811,6 +811,80 @@ func TestFindings_ownerFilter(t *testing.T) {
 	}
 }
 
+func TestFindings_missedFilterAndBadge(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://example.com/r", Name: "r"}
+	s.DB.Create(&repo)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "x"}
+	s.DB.Create(&scan)
+	s.DB.Create(&db.Finding{ScanID: scan.ID, RepositoryID: repo.ID, Title: "still-present finding",
+		Severity: "High"})
+	s.DB.Create(&db.Finding{ScanID: scan.ID, RepositoryID: repo.ID, Title: "possibly-fixed finding",
+		Severity: "High", MissedCount: 2, LastMissedScanID: scan.ID})
+
+	// Unfiltered: both visible, missed one shows the count, toolbar shows total.
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, localReq("GET", "/findings"))
+	body := w.Body.String()
+	if !strings.Contains(body, "still-present finding") || !strings.Contains(body, "possibly-fixed finding") {
+		t.Fatalf("unfiltered list missing rows: %s", body)
+	}
+	if !strings.Contains(body, "not seen 2x") {
+		t.Error("missed-count marker not rendered on row")
+	}
+	if !strings.Contains(body, "Not seen on rescan (1)") {
+		t.Error("toolbar should show total findings with missed_count > 0")
+	}
+
+	// ?missed=1: only the missed finding.
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, localReq("GET", "/findings?missed=1"))
+	body = w.Body.String()
+	if strings.Contains(body, "still-present finding") {
+		t.Error("?missed=1 should hide findings with missed_count = 0")
+	}
+	if !strings.Contains(body, "possibly-fixed finding") {
+		t.Error("?missed=1 should show findings with missed_count > 0")
+	}
+	// Severity/sort links preserve the missed filter.
+	if !strings.Contains(body, "severity=High&sort=newest&missed=1") {
+		t.Error("severity dropdown links should carry missed=1")
+	}
+}
+
+func TestFindingShow_rendersMissedCount(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://example.com/r", Name: "r"}
+	s.DB.Create(&repo)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "x"}
+	s.DB.Create(&scan)
+	rescan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "x"}
+	s.DB.Create(&rescan)
+	f := db.Finding{ScanID: scan.ID, RepositoryID: repo.ID, Title: "gone upstream", Severity: "High",
+		LastSeenScanID: scan.ID, SeenCount: 1, MissedCount: 3, LastMissedScanID: rescan.ID}
+	s.DB.Create(&f)
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, localReq("GET", fmt.Sprintf("/findings/%d", f.ID)))
+	body := w.Body.String()
+	if w.Code != 200 {
+		t.Fatalf("status %d: %s", w.Code, body)
+	}
+	if !strings.Contains(body, "Not seen") {
+		t.Error("expected 'Not seen' label on finding page")
+	}
+	if !strings.Contains(body, "(missed 3x)") {
+		t.Error("expected missed count rendered on finding page")
+	}
+	if !strings.Contains(body, fmt.Sprintf("scan #%d", rescan.ID)) {
+		t.Error("expected link to last-missed scan")
+	}
+}
+
 func TestOrgReport_rendersFindingsAcrossRepos(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()

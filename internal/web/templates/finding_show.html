@@ -70,6 +70,15 @@
       {{else}}-{{end}}
     </dd>
   </div>
+  {{if gt $f.MissedCount 0}}
+  <div>
+    <dt class="text-muted-foreground">Not seen</dt>
+    <dd>
+      <a href="/scans/{{$f.LastMissedScanID}}" class="hover:underline">scan #{{$f.LastMissedScanID}}</a>
+      <span class="text-xs text-muted-foreground">(missed {{$f.MissedCount}}x)</span>
+    </dd>
+  </div>
+  {{end}}
   {{if $f.CVEID}}
   <div>
     <dt class="text-muted-foreground">CVE</dt>

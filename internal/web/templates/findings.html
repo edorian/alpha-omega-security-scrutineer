@@ -5,12 +5,27 @@
     <i data-lucide="bug"></i> Findings
   </h2>
   <div class="flex items-center gap-2">
+    {{$mp := ""}}{{if .Missed}}{{$mp = "1"}}{{end}}
     <form method="get" action="/findings" class="inline-flex">
       <input class="input" type="search" name="q" value="{{.Q}}" placeholder="Search findings"
              autocomplete="off" spellcheck="false">
       <input type="hidden" name="severity" value="{{.Severity}}">
       <input type="hidden" name="sort" value="{{.Sort}}">
+      {{if .Missed}}<input type="hidden" name="missed" value="1">{{end}}
     </form>
+    {{if gt .MissedTotal 0}}
+      {{if .Missed}}
+        <a class="btn-outline" aria-pressed="true"
+           href="/findings?q={{.Q}}&severity={{.Severity}}&sort={{.Sort}}">
+          <i data-lucide="eye-off"></i> Not seen on rescan ({{.MissedTotal}})
+        </a>
+      {{else}}
+        <a class="btn-outline"
+           href="/findings?q={{.Q}}&severity={{.Severity}}&sort={{.Sort}}&missed=1">
+          <i data-lucide="eye-off"></i> Not seen on rescan ({{.MissedTotal}})
+        </a>
+      {{end}}
+    {{end}}
     <div class="dropdown-menu">
       <button type="button" class="btn-outline" aria-haspopup="menu" aria-expanded="false">
         <i data-lucide="filter"></i>
@@ -19,9 +34,9 @@
       </button>
       <div data-popover aria-hidden="true" data-align="end">
         <div role="menu">
-          <a role="menuitem" href="/findings?q={{.Q}}&sort={{.Sort}}">All severities</a>
+          <a role="menuitem" href="/findings?q={{.Q}}&sort={{.Sort}}&missed={{$mp}}">All severities</a>
           {{range (list "Critical" "High" "Medium" "Low")}}
-            <a role="menuitem" href="/findings?q={{$.Q}}&severity={{.}}&sort={{$.Sort}}"
+            <a role="menuitem" href="/findings?q={{$.Q}}&severity={{.}}&sort={{$.Sort}}&missed={{$mp}}"
                {{if eq . $.Severity}}aria-current="true"{{end}}>{{.}}</a>
           {{end}}
         </div>
@@ -36,7 +51,7 @@
       <div data-popover aria-hidden="true" data-align="end">
         <div role="menu">
           {{range (list "newest" "severity" "repository")}}
-            <a role="menuitem" href="/findings?q={{$.Q}}&severity={{$.Severity}}&sort={{.}}"
+            <a role="menuitem" href="/findings?q={{$.Q}}&severity={{$.Severity}}&sort={{.}}&missed={{$mp}}"
                {{if eq . $.Sort}}aria-current="true"{{end}}>{{.}}</a>
           {{end}}
         </div>
@@ -63,6 +78,12 @@
         <td>{{template "severity-badge" .Severity}}</td>
         <td class="min-w-0 whitespace-normal">
           <a href="/findings/{{.ID}}" class="font-medium">{{.Title}}</a>
+          {{if gt .MissedCount 0}}
+            <span class="badge-outline text-xs"
+                  data-tooltip="Not observed in the last {{.MissedCount}} rescan(s) of this repository">
+              not seen {{.MissedCount}}x
+            </span>
+          {{end}}
           <div class="text-xs text-muted-foreground line-clamp-2">{{.Summary}}</div>
         </td>
         <td>{{template "finding-status" (fstatus .Status)}}</td>

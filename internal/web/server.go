@@ -809,6 +809,10 @@ func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 		q = q.Where("repository_id IN (?)",
 			s.DB.Model(&db.Repository{}).Select("id").Where("owner = ?", owner))
 	}
+	missed := r.URL.Query().Get("missed") == "1"
+	if missed {
+		q = q.Where("missed_count > 0")
+	}
 	search := strings.TrimSpace(r.URL.Query().Get("q"))
 	if search != "" {
 		like := "%" + search + "%"
@@ -843,10 +847,13 @@ func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	var missedTotal int64
+	s.DB.Model(&db.Finding{}).Where("missed_count > 0").Count(&missedTotal)
+
 	s.render(w, r, "findings.html", map[string]any{
 		"Findings": rows, "Page": page, "Severity": sev, "Sort": sort,
 		"Repos": reposByID, "Q": search, "AnySubPath": anySubPath,
-		"Owner": owner,
+		"Owner": owner, "Missed": missed, "MissedTotal": missedTotal,
 	})
 }
 

@@ -237,5 +237,6 @@ func findingSummary(f db.Finding) map[string]any {
 		"fix_commit":    f.FixCommit,
 		"resolution":    string(f.Resolution),
 		"assignee":      f.Assignee,
+		"missed_count":  f.MissedCount,
 	}
 }

@@ -73,6 +73,11 @@ func TestExportRepoFindings(t *testing.T) {
 		if row["repository_id"] != float64(repoA.ID) {
 			t.Errorf("row has repository_id %v, want %d", row["repository_id"], repoA.ID)
 		}
+		for _, k := range []string{"missed_count", "last_missed_scan_id"} {
+			if _, ok := row[k]; !ok {
+				t.Errorf("export row missing %q", k)
+			}
+		}
 	}
 }
 
