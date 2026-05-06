@@ -19,18 +19,17 @@ Kick off the standard set of scans against a freshly-added repository.
 
 ## Classify the repository
 
-Run `brief ./src` and read its JSON. Three fields decide which scans are worth queueing:
+Run `brief ./src` and read its JSON. Two fields decide which scans are worth queueing:
 
 - `languages` — programming languages detected; `null` or empty means no source
 - `package_managers` — manifest/lockfile ecosystems detected; `null` or empty means nothing publishes or consumes packages here
-- `layout.source_dirs` — where application/library code lives; `null` or empty means any detected language is incidental scripts
 
 From those, set two flags:
 
 - `has_packages` = `package_managers` is present and non-empty
-- `has_code` = `languages` is non-empty AND (`layout.source_dirs` is non-empty OR `has_packages`)
+- `has_code` = `languages` is present and non-empty
 
-A docs repo (markdown only) has neither. An infrastructure repo (terraform, helm, cloudformation) typically has stray script languages but neither `source_dirs` nor `package_managers`, so `has_code` is false. A real application or library has both. If `brief` is not on PATH or exits non-zero, set both flags true and carry on.
+A docs repo (markdown only) has neither. Anything with detected source gets the code scans, whether it is an application, a library, infra scripts, or a flat-layout package. The cost of running semgrep on a stray shell script is far lower than missing a real library because brief failed to populate `layout.source_dirs`. Do not gate on `layout.source_dirs`; it is a heuristic and routinely empty for legitimate codebases. If `brief` is not on PATH or exits non-zero, set both flags true and carry on.
 
 ## The scan set
 
@@ -48,14 +47,16 @@ Always:
 - `maintainers`
 - `repo-overview`
 - `zizmor`
+- `packages`
+- `advisories`
 
 Only when `has_packages`:
 
-- `packages`
-- `advisories`
 - `dependents`
 - `dependencies`
 - `sbom`
+
+`packages` and `advisories` query ecosyste.ms by repository URL rather than reading local manifests, so they run unconditionally even though they sound package-related. `dependents` also queries by URL but is only meaningful when the repo actually publishes packages, so it stays gated.
 
 Only when `has_code`:
 
@@ -79,7 +80,7 @@ Write `./report.json` as:
 {
   "has_code": true,
   "has_packages": true,
-  "brief": {"languages": ["Ruby"], "package_managers": ["Bundler"], "source_dirs": ["lib", "app"]},
+  "brief": {"languages": ["Ruby"], "package_managers": ["Bundler"]},
   "triggered": ["metadata", "packages", ...],
   "skipped":   ["semgrep"],
   "gated":     [],
