@@ -41,6 +41,9 @@ type skillContextScrutineer struct {
 	// support). Empty means the repo root. Skills that walk files honour
 	// this; skills that query external APIs ignore it.
 	ScanSubPath string `json:"scan_subpath,omitempty"`
+	// ForkOrg is the GitHub organisation the fork skill forks into and
+	// files draft advisories against. Absent when fork_org is unconfigured.
+	ForkOrg string `json:"fork_org,omitempty"`
 }
 
 type skillContextRepo struct {
@@ -89,7 +92,7 @@ func (w *Worker) doSkill(ctx context.Context, scan *db.Scan, emit func(Event)) (
 	if err := stageSkill(&skill, skillDir); err != nil {
 		return "", fmt.Errorf("stage skill: %w", err)
 	}
-	if err := stageContext(workRoot, w.APIBase, scan, &scan.Repository); err != nil {
+	if err := stageContext(workRoot, w.APIBase, w.ForkOrg, scan, &scan.Repository); err != nil {
 		return "", fmt.Errorf("stage context: %w", err)
 	}
 
@@ -412,7 +415,7 @@ func oneLine(s string) string {
 // rely on. Kept small and boring on purpose: skills that need more detail
 // can read it from the clone. The scrutineer block gives skills enough to
 // call back into the host API (list scans, trigger more skills).
-func stageContext(workRoot, apiBase string, scan *db.Scan, repo *db.Repository) error {
+func stageContext(workRoot, apiBase, forkOrg string, scan *db.Scan, repo *db.Repository) error {
 	if err := os.MkdirAll(workRoot, dirPerm); err != nil {
 		return err
 	}
@@ -429,6 +432,7 @@ func stageContext(workRoot, apiBase string, scan *db.Scan, repo *db.Repository) 
 			ScanID:  scan.ID,
 			Token:   scan.APIToken,
 			RepoID:  scan.RepositoryID,
+			ForkOrg: forkOrg,
 		},
 	}
 	if scan.SkillID != nil {

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fork report",
+  "description": "What the fork skill did: where the fork lives, whether private reporting is on, the scan note that was pushed, and which advisories were filed.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "fork_org": {
+      "type": "string",
+      "description": "The configured GitHub organisation."
+    },
+    "upstream": {
+      "type": "string",
+      "description": "owner/repo of the scanned upstream."
+    },
+    "fork": {
+      "type": "string",
+      "description": "owner/repo of the fork inside fork_org."
+    },
+    "fork_name": {
+      "type": "string",
+      "description": "Repository name used for the fork. Usually the upstream repo name; falls back to owner-repo on collision."
+    },
+    "forked": {
+      "type": "string",
+      "enum": ["created", "exists"],
+      "description": "Whether the fork was newly created or already present in the org."
+    },
+    "private_reporting": {
+      "type": "string",
+      "enum": ["enabled", "already-enabled", "org-managed", "failed"],
+      "description": "Outcome of turning on private vulnerability reporting on the fork."
+    },
+    "scanned_at": {
+      "type": "string",
+      "description": "RFC3339 UTC timestamp written into the git note."
+    },
+    "scanned_commit": {
+      "type": "string",
+      "description": "Upstream commit the scan ran at and the note is attached to."
+    },
+    "note_pushed": {
+      "type": "boolean",
+      "description": "True if refs/notes/scrutineer was pushed to the fork."
+    },
+    "advisories": {
+      "type": "array",
+      "description": "Draft advisories filed on the fork, one per ready finding.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "ghsa_id", "url"],
+        "properties": {
+          "finding_id": { "type": "integer" },
+          "ghsa_id": { "type": "string" },
+          "url": { "type": "string" }
+        }
+      }
+    },
+    "skipped_advisories": {
+      "type": "array",
+      "description": "Findings that were not filed because an advisory with the same summary already exists on the fork, or the finding was not ready.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "reason"],
+        "properties": {
+          "finding_id": { "type": "integer" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "team": {
+      "type": ["string", "null"],
+      "description": "Slug of the org team invited as collaborator on the fork and advisories. Null when no team matched."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Anything that did not go cleanly: 422 from the settings PATCH, shallow-clone unshallow, missing disclosure_draft on a finding, etc."
+    },
+    "error": {
+      "type": ["string", "null"],
+      "description": "Set when the skill refused to run (no fork_org, non-github upstream, gh not authenticated, no free fork name)."
+    }
+  }
+}

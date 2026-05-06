@@ -82,6 +82,7 @@ func (s *Server) scanOwnsRepo(r *http.Request, repoID uint) bool {
 func (s *Server) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repositories/{id}", s.apiGetRepository)
+	mux.HandleFunc("PATCH /repositories/{id}", s.apiPatchRepository)
 	mux.HandleFunc("GET /repositories/{id}/scans", s.apiListScans)
 	mux.HandleFunc("GET /repositories/{id}/maintainers", s.apiListMaintainers)
 	mux.HandleFunc("GET /repositories/{id}/packages", s.apiListPackages)
@@ -131,7 +132,35 @@ func (s *Server) apiGetRepository(w http.ResponseWriter, r *http.Request) {
 		"archived":       repo.Archived,
 		"languages":      repo.Languages,
 		"license":        repo.License,
+		"fork":           repo.Fork,
 	})
+}
+
+// apiPatchRepository lets a skill write back fields it derived for the
+// repository. Currently only `fork` (the staging fork's owner/name) is
+// accepted; everything else on Repository is owned by the metadata job.
+func (s *Server) apiPatchRepository(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.Atoi(r.PathValue("id"))
+	if !s.scanOwnsRepo(r, uint(id)) {
+		writeAPIError(w, http.StatusForbidden, "scan may only edit its own repository")
+		return
+	}
+	var body struct {
+		Fork *string `json:"fork"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "body must be JSON")
+		return
+	}
+	if body.Fork == nil {
+		writeAPIError(w, http.StatusUnprocessableEntity, "no writable fields in body")
+		return
+	}
+	if err := s.DB.Model(&db.Repository{}).Where("id = ?", id).Update("fork", *body.Fork).Error; err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) apiListScans(w http.ResponseWriter, r *http.Request) {

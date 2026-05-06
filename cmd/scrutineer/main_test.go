@@ -22,6 +22,7 @@ func fullConfig() *config.Config {
 		ScanTimeout:      "30m",
 		MaxTurns:         200,
 		AnthropicBaseURL: "https://proxy.corp.com/v1",
+		ForkOrg:          "fork-central",
 	}
 }
 
@@ -55,6 +56,9 @@ func TestFlagsMerge_configFillsUnset(t *testing.T) {
 	}
 	if f.anthropicBaseURL != cfg.AnthropicBaseURL {
 		t.Errorf("anthropicBaseURL = %q, want %q", f.anthropicBaseURL, cfg.AnthropicBaseURL)
+	}
+	if f.forkOrg != cfg.ForkOrg {
+		t.Errorf("forkOrg = %q, want %q", f.forkOrg, cfg.ForkOrg)
 	}
 }
 

@@ -143,6 +143,72 @@ func TestAPIListsTypedReads(t *testing.T) {
 	}
 }
 
+func TestAPIPatchRepositoryFork(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	repo, scan := seedRunningScan(t, s)
+
+	r := httptest.NewRequest("PATCH", "/api/repositories/"+strconv.FormatUint(uint64(repo.ID), 10),
+		strings.NewReader(`{"fork":"fork-central/x"}`))
+	r.Host = testHost
+	r.Header.Set("Authorization", "Bearer "+scan.APIToken)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 204 {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	var got db.Repository
+	s.DB.First(&got, repo.ID)
+	if got.Fork != "fork-central/x" {
+		t.Errorf("Fork = %q, want fork-central/x", got.Fork)
+	}
+
+	r = httptest.NewRequest("GET", "/api/repositories/"+strconv.FormatUint(uint64(repo.ID), 10), nil)
+	r.Host = testHost
+	r.Header.Set("Authorization", "Bearer "+scan.APIToken)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	var body map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&body)
+	if body["fork"] != "fork-central/x" {
+		t.Errorf("GET fork = %v", body["fork"])
+	}
+}
+
+func TestAPIPatchRepositoryRejectsOtherRepo(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	_, scan := seedRunningScan(t, s)
+	other := db.Repository{URL: "https://example.com/y", Name: "y"}
+	s.DB.Create(&other)
+
+	r := httptest.NewRequest("PATCH", "/api/repositories/"+strconv.FormatUint(uint64(other.ID), 10),
+		strings.NewReader(`{"fork":"fork-central/y"}`))
+	r.Host = testHost
+	r.Header.Set("Authorization", "Bearer "+scan.APIToken)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 403 {
+		t.Fatalf("status %d, want 403", w.Code)
+	}
+}
+
+func TestAPIPatchRepositoryRejectsEmptyBody(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	repo, scan := seedRunningScan(t, s)
+
+	r := httptest.NewRequest("PATCH", "/api/repositories/"+strconv.FormatUint(uint64(repo.ID), 10),
+		strings.NewReader(`{}`))
+	r.Host = testHost
+	r.Header.Set("Authorization", "Bearer "+scan.APIToken)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 422 {
+		t.Fatalf("status %d, want 422", w.Code)
+	}
+}
+
 func TestAPIFindingReadsAndFilters(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()

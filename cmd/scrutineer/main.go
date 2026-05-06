@@ -62,6 +62,7 @@ type flags struct {
 	scanTimeout      time.Duration
 	maxTurns         int
 	anthropicBaseURL string
+	forkOrg          string
 	skillLocal       skillDirs
 
 	// set records which flags were passed on the command line so merge
@@ -83,6 +84,7 @@ func parseFlags() *flags {
 	flag.DurationVar(&f.scanTimeout, "scan-timeout", worker.DefaultScanTimeout, "wall-clock limit per scan")
 	flag.IntVar(&f.maxTurns, "max-turns", 0, "claude --max-turns limit (0 = unlimited)")
 	flag.StringVar(&f.anthropicBaseURL, "anthropic-base-url", "", "custom Anthropic API base URL (env: ANTHROPIC_BASE_URL)")
+	flag.StringVar(&f.forkOrg, "fork-org", "", "GitHub org the fork skill forks into and files draft advisories against")
 	flag.Var(&f.skillLocal, "skills", "directory to load SKILL.md files from (repeatable)")
 	flag.Parse()
 
@@ -94,6 +96,8 @@ func parseFlags() *flags {
 // merge layers cfg underneath f: a config value applies only when the
 // matching CLI flag was not set explicitly. Also pushes model overrides
 // into the web package.
+//
+//nolint:gocognit,gocyclo // flat: one guarded assignment per config key
 func (f *flags) merge(cfg *config.Config) {
 	if cfg.Addr != "" && !f.set["addr"] {
 		f.addr = cfg.Addr
@@ -130,6 +134,9 @@ func (f *flags) merge(cfg *config.Config) {
 	}
 	if cfg.AnthropicBaseURL != "" && !f.set["anthropic-base-url"] {
 		f.anthropicBaseURL = cfg.AnthropicBaseURL
+	}
+	if cfg.ForkOrg != "" && !f.set["fork-org"] {
+		f.forkOrg = cfg.ForkOrg
 	}
 
 	if len(cfg.Models) > 0 {
@@ -267,6 +274,7 @@ func run(log *slog.Logger) error {
 		Log:         log,
 		DataDir:     filepath.Join(f.dataDir, "work"),
 		APIBase:     apiBase,
+		ForkOrg:     f.forkOrg,
 		Runner:      runner,
 		ScanTimeout: f.scanTimeout,
 		OnEvent: func(scanID, repoID uint, name, data string) {

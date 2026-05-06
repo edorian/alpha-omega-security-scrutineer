@@ -246,7 +246,7 @@ func TestStageContext_writesRepoFacts(t *testing.T) {
 		DefaultBranch: "main",
 	}
 	scan := &db.Scan{ID: 7, RepositoryID: 3, APIToken: "tok"}
-	if err := stageContext(dir, "http://127.0.0.1:8080/api", scan, repo); err != nil {
+	if err := stageContext(dir, "http://127.0.0.1:8080/api", "", scan, repo); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "context.json"))
@@ -301,7 +301,7 @@ func TestStageContext_includesRef(t *testing.T) {
 	dir := t.TempDir()
 	repo := &db.Repository{URL: "https://example.com/x", Name: "x"}
 	scan := &db.Scan{ID: 1, RepositoryID: 1, APIToken: "t", Ref: "2.4.x"}
-	if err := stageContext(dir, "http://127.0.0.1:8080/api", scan, repo); err != nil {
+	if err := stageContext(dir, "http://127.0.0.1:8080/api", "", scan, repo); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "context.json"))
@@ -321,7 +321,7 @@ func TestStageContext_omitsRefWhenEmpty(t *testing.T) {
 	dir := t.TempDir()
 	repo := &db.Repository{URL: "https://example.com/x", Name: "x"}
 	scan := &db.Scan{ID: 1, RepositoryID: 1, APIToken: "t"}
-	if err := stageContext(dir, "http://127.0.0.1:8080/api", scan, repo); err != nil {
+	if err := stageContext(dir, "http://127.0.0.1:8080/api", "", scan, repo); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "context.json"))
@@ -330,5 +330,28 @@ func TestStageContext_omitsRefWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(string(b), "scan_ref") {
 		t.Errorf("scan_ref should be omitted when empty, got: %s", b)
+	}
+	if strings.Contains(string(b), "fork_org") {
+		t.Errorf("fork_org should be omitted when empty, got: %s", b)
+	}
+}
+
+func TestStageContext_includesForkOrg(t *testing.T) {
+	dir := t.TempDir()
+	repo := &db.Repository{URL: "https://github.com/o/r", Name: "r"}
+	scan := &db.Scan{ID: 1, RepositoryID: 1, APIToken: "t"}
+	if err := stageContext(dir, "http://127.0.0.1:8080/api", "fork-central", scan, repo); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "context.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got skillContext
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Scrutineer.ForkOrg != "fork-central" {
+		t.Errorf("fork_org = %q, want fork-central", got.Scrutineer.ForkOrg)
 	}
 }

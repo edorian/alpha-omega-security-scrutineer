@@ -39,6 +39,7 @@ type Worker struct {
 	Log         *slog.Logger
 	DataDir     string // workspace root for clones
 	APIBase     string // base URL for the scrutineer skill API (http://host:port/api)
+	ForkOrg     string // github org the fork skill targets; empty disables it
 	Runner      SkillRunner
 	OnEvent     func(scanID, repoID uint, name, data string) // optional SSE bridge
 	ScanTimeout time.Duration

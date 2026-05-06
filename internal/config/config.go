@@ -54,6 +54,10 @@ type Config struct {
 	// Theme selects the colour scheme: "claude" (default), "ocean-breeze",
 	// "catppuccin", "sunset-horizon", "midnight-bloom", or "northern-lights".
 	Theme string `yaml:"theme"`
+	// ForkOrg is the GitHub organisation the fork skill forks scanned
+	// repositories into and files draft advisories against. Empty disables
+	// the fork skill (it will refuse to run without a target org).
+	ForkOrg string `yaml:"fork_org"`
 }
 
 // ParseScanTimeout validates and parses a scan_timeout string. Empty

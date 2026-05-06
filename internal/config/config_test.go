@@ -65,6 +65,7 @@ concurrency: 8
 clone: full
 scan_timeout: 30m
 max_turns: 200
+fork_org: fork-central
 `)
 	c, err := Load(path)
 	if err != nil {
@@ -93,6 +94,9 @@ max_turns: 200
 	}
 	if c.ScanTimeout != "30m" || c.MaxTurns != 200 {
 		t.Errorf("scan_timeout=%q max_turns=%d", c.ScanTimeout, c.MaxTurns)
+	}
+	if c.ForkOrg != "fork-central" {
+		t.Errorf("fork_org=%q, want fork-central", c.ForkOrg)
 	}
 }
 

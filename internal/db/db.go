@@ -53,6 +53,11 @@ type Repository struct {
 	Posture        string `gorm:"index"`
 	PostureSummary string
 
+	// Fork is the full_name (owner/name) of this repository's fork inside
+	// the configured fork_org. Written by the fork skill so later runs and
+	// the UI can find the staging fork without re-resolving the name.
+	Fork string
+
 	// CloneError is set when the last clone/fetch attempt failed (repo
 	// deleted, made private, wrong URL). Non-empty means the repo is
 	// currently unreachable. Cleared on next successful clone.
