@@ -23,14 +23,14 @@ Take an existing finding produced by a prior audit skill and check whether it st
 
 1. Read `./context.json`. If `scrutineer.finding_id` is missing, write `{"status": "inconclusive", "notes": "no finding_id in context.json; verify is finding-scoped"}` and exit.
 
-2. Fetch the finding: `GET {api_base}/findings/{finding_id}` with `Authorization: Bearer {token}`. You get back title, severity, location, cwe, affected, and the six-step prose (trace, boundary, validation, prior_art, reach, rating).
+2. Fetch the finding: `GET {api_base}/findings/{finding_id}` with `Authorization: Bearer {token}`. You get back title, severity, location, cwe, affected, and the six-step prose (trace, boundary, validation, prior_art, reach, rating). If the fetch returns non-200, write `{"status": "inconclusive", "evidence": "", "notes": "fetch failed: <status>"}` and exit.
 
 3. Read the `validation` field. This is the original reproduction instructions: how to run it, what it looked like when it worked, what dangerous behaviour was observed.
 
-4. Re-run the reproduction against `./src`. Be conservative:
+4. Re-run the reproduction against `./src` at HEAD. The point of this skill is to check whether the finding still holds against the current code, so always test HEAD. Be conservative:
    - Only run what the validation field describes. Do not improvise a new attack vector.
    - If the validation is prose-only (no concrete script), try to execute what it describes literally. If you cannot turn the prose into a runnable check, that is `inconclusive` — say why.
-   - Prefer running the reproduction against the published artefact (as the original did) over git HEAD, if the validation mentions one.
+   - If the validation installs the package from a registry (`gem install foo`, `pip install foo`), build and install from `./src` instead so you are testing HEAD, not the last release. If the package cannot be built locally, status is `inconclusive` with the build error in `notes`.
    - Capture stdout, stderr, exit code. Paste relevant excerpts into `evidence`.
 
 5. Decide the status:
