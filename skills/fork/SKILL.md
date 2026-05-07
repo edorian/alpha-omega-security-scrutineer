@@ -97,10 +97,10 @@ For each remaining finding fetch the full record (`GET {api_base}/findings/{id}`
 Before filing, list the advisories already on the fork so re-runs do not duplicate:
 
 ```
-gh api repos/{fork_org}/{fork_name}/security-advisories --paginate --jq '.[].summary'
+gh api repos/{fork_org}/{fork_name}/security-advisories --paginate --jq '.[].description'
 ```
 
-Skip a finding whose title already appears as an advisory summary; record it under `"skipped_advisories"`.
+Every advisory this skill files carries a `[scrutineer-finding:{finding_id}]` marker on its last line (see below). Skip a finding whose marker already appears in any existing description; record it under `"skipped_advisories"` with reason `"already filed"`. Do not dedup on summary/title — distinct findings can share a title.
 
 For each remaining finding, build the request body and create a draft repository security advisory on the fork. Use the admin create endpoint, not `/reports` — `/reports` is for external reporters and is rejected when the caller is a repo admin, which we are.
 
@@ -125,7 +125,14 @@ The body shape is the GHSA create schema:
 
 Build `vulnerabilities` from `GET {api_base}/repositories/{repository_id}/packages` using the same ecosystem mapping the disclose skill uses (rubygems, npm, pip, maven, nuget, composer, go, rust, erlang, actions, pub, other). If the repository has no packages, send `"vulnerabilities": [{"package": {"ecosystem": "other", "name": "{owner}/{repo}"}}]` — the endpoint requires at least one entry.
 
-`vulnerable_version_range` must be a bare constraint string. `finding.affected` is analyst prose and often carries annotations like `<= 0.9.1 (all published versions)` or `1.x through 2.3`; reduce it to comma-separated `OP VERSION` clauses where OP is one of `<`, `<=`, `>`, `>=`, `=` and VERSION is dotted-numeric (a leading `v` is fine). Drop anything in parentheses, drop the package name if it was repeated, and turn `all versions` / `every release` into `>= 0`. If you cannot confidently reduce it to that shape, omit `vulnerable_version_range` from the entry and keep the original prose in the description's Affected versions section instead.
+`vulnerable_version_range` must be a bare constraint string. `finding.affected` is analyst prose; normalise it before sending:
+
+- drop anything in parentheses and any repeated package name
+- `all versions` / `every release` → `>= 0`
+- result must be comma-separated `OP VERSION` clauses where OP is one of `< <= > >= =` and VERSION is dotted-numeric (leading `v` is fine)
+- if you cannot reduce it to that shape, omit `vulnerable_version_range` and keep the original prose in the description's Affected versions section
+
+Whatever description you send (the disclose draft, or the template below), append a final line `[scrutineer-finding:{finding_id}]` so re-runs can dedup on it.
 
 If `disclosure_draft` is empty the disclose skill has not run on this finding yet. Assemble the description yourself from the finding's six-step prose (the full `GET {api_base}/findings/{id}` response includes `trace`, `boundary`, `validation`, `prior_art`, `reach`, `rating` even for `new` findings). Use this template, dropping any section whose source field is empty:
 

@@ -36,11 +36,11 @@ A docs repo (markdown only) has neither. Anything with detected source gets the 
 
 Before enqueueing anything, check what already ran so a re-trigger does not double-enqueue work that is already current.
 
-Get the commit you are running at: `git -C ./src rev-parse HEAD`. Then fetch `GET {api_base}/repositories/{repository_id}/scans`, which returns every scan on this repository with `skill_name`, `status`, and `commit`. Build a set of skill names to skip: a skill goes in the skip set if it has a scan with `status="running"`, or a scan with `status="done"` whose `commit` equals the current HEAD. A `done` scan at any other commit does not count; the repository has moved since then and the skill should run again.
+Get the commit you are running at: `git -C ./src rev-parse HEAD`. Then fetch `GET {api_base}/repositories/{repository_id}/scans`, which returns every scan on this repository with `skill_name`, `status`, and `commit`. If that fetch fails, treat the skip set as empty and carry on. Otherwise build a set of skill names to skip: a skill goes in the skip set if it has a scan with `status` in {`queued`, `running`}, or a scan with `status="done"` whose `commit` equals the current HEAD. A `done` scan at any other commit does not count; the repository has moved since then and the skill should run again. `failed` scans are re-enqueued.
 
-For every remaining skill in the list below, enqueue it: `POST {api_base}/repositories/{id}/skills/{name}/run` with an `Authorization: Bearer {token}` header. Order does not matter; the scrutineer worker runs them as they come in.
+Classify each skill in the list below into exactly one bucket, checking in this order and stopping at the first match: `gated` (its `has_code`/`has_packages` flag is false), `already_done` (it is in the skip set), `triggered` (enqueue it). Enqueue with `POST {api_base}/repositories/{id}/skills/{name}/run` and an `Authorization: Bearer {token}` header. Order does not matter; the scrutineer worker runs them as they come in. A 404 response moves the skill from `triggered` to `skipped`.
 
-If `scrutineer.scan_ref` is set in `context.json`, include it in the POST body as `{"ref": "<value>"}` so child scans clone the same branch. If it is empty, send an empty JSON body or omit the body.
+If `scrutineer.scan_ref` is set in `context.json`, include it in the POST body as `{"ref": "<value>"}` so child scans clone the same branch. If it is empty, send an empty JSON body or omit the body. Verify runs (below) always send `{}`; they are finding-scoped and do not take a ref.
 
 Always:
 
@@ -82,7 +82,7 @@ Write `./report.json` as:
   "has_code": true,
   "has_packages": true,
   "brief": {"languages": ["Ruby"], "package_managers": ["Bundler"]},
-  "triggered": ["metadata", "packages", ...],
+  "triggered": ["packages", "advisories", ...],
   "skipped":   ["semgrep"],
   "gated":     [],
   "already_done": ["metadata"],

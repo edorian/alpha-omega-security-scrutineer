@@ -6,7 +6,7 @@ compatibility: Requires `semgrep` (https://semgrep.dev) and `python3` on PATH.
 metadata:
   scrutineer.version: 1
   scrutineer.output_file: report.json
-  scrutineer.output_kind: freeform
+  scrutineer.output_kind: findings
 ---
 
 # semgrep

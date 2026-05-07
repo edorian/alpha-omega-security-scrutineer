@@ -24,7 +24,7 @@ List the discrete scannable units inside a repository so the analyst can scope s
 
 A subproject is a sub-folder that looks like an independently buildable, scannable unit. Heuristics, in descending order of signal strength:
 
-1. **Explicit monorepo declarations.** If the repo has any of these at the root, the file names the workspaces directly — use them verbatim:
+1. **Explicit monorepo declarations.** If the repo has any of these at the root, the file names the workspaces directly. Expand any globs against `./src` and emit one row per matched directory:
    - `pnpm-workspace.yaml` — `packages:` glob list
    - `lerna.json` — `packages:` array
    - `nx.json` / `workspace.json` — NX workspace layout
@@ -33,7 +33,7 @@ A subproject is a sub-folder that looks like an independently buildable, scannab
    - root `Cargo.toml` with `[workspace].members`
    - `pyproject.toml` with `[tool.uv.workspace].members` or Rye/hatch equivalents
 
-2. **Sub-folder package manifests.** When no workspace declaration exists, scan sub-folders (depth ≤ 3, skip `node_modules`, `vendor`, `.git`, `dist`, `build`, `target`) for any of:
+2. **Sub-folder package manifests.** Scan sub-folders (depth ≤ 3, skip `node_modules`, `vendor`, `.git`, `dist`, `build`, `target`) for any of the manifests below. Run this even when a workspace declaration exists, then union the two sets — `go.work` and friends are often incomplete.
    - `go.mod` → go-module
    - `package.json` with a `name` field → npm-package
    - `pyproject.toml` / `setup.py` / `setup.cfg` → python-package
@@ -86,12 +86,12 @@ Fields:
 
 - `path` — required, relative to repo root, no leading slash. This is what scrutineer stores on `Scan.sub_path` when the analyst scans it.
 - `name` — short human label. Use the package's own name when the manifest has one (`name` in package.json, `module` path in go.mod, `[package].name` in Cargo.toml); otherwise the last segment of `path`.
-- `kind` — the detection hit: `go-module`, `npm-package`, `python-package`, `rust-crate`, `composer-package`, `maven-module`, `gradle-module`, `ruby-gem`, `swift-package`, `service`, `monorepo-root`, etc. Free-form; the UI renders it as a badge.
+- `kind` — the detection hit: `go-module`, `npm-package`, `python-package`, `rust-crate`, `composer-package`, `maven-module`, `gradle-module`, `ruby-gem`, `swift-package`, `service`, etc. Free-form; the UI renders it as a badge.
 - `description` — one or two sentences. Read the README in the sub-folder if present, or infer from the package name and directory structure. Keep it specific ("AWS provider package", not "code for AWS").
 
 ## Constraints
 
 - Empty list is the correct output for a single-package repo. Do not invent subprojects to avoid an empty array.
 - Do not include the root directory as a row. Root is implicit.
-- Do not add more than ~50 rows. If a monorepo is bigger than that, pick the 50 most significant (largest manifests, deepest tree, or named in a workspace declaration) and note the truncation in a `notes` field (the schema allows it).
+- Do not add more than ~50 rows. If a monorepo is bigger than that, keep workspace-declared entries first, then fill the remainder by file count (largest first), and set the top-level `notes` field to `"truncated to 50 of N"`.
 - Scrutineer replaces the full set on each re-run, so missing rows from a previous run will disappear — do not try to merge with prior output.

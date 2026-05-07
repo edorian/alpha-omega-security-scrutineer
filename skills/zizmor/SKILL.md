@@ -6,7 +6,7 @@ compatibility: Requires `zizmor` (https://github.com/woodruffw/zizmor) and `pyth
 metadata:
   scrutineer.version: 1
   scrutineer.output_file: report.json
-  scrutineer.output_kind: freeform
+  scrutineer.output_kind: findings
 ---
 
 # zizmor
@@ -22,7 +22,7 @@ Run zizmor against `./src/.github/workflows` and map each issue into scrutineer'
 
 ## Available scripts
 
-- `scripts/scan.py` — invokes `zizmor --format json .github/workflows` and converts the output. If the repo has no workflows directory, it writes an empty result so the scan succeeds cleanly. zizmor's severity values (`unknown`, `low`, `medium`, `high`, `critical`) are mapped to scrutineer's `Low`/`Medium`/`High`/`Critical`.
+- `scripts/scan.py` — invokes `zizmor --format json .github/workflows` and converts the output. If the repo has no workflows directory, it writes an empty result so the scan succeeds cleanly. zizmor's severity values are mapped to scrutineer's: `unknown`/`informational`/`low` → `Low`, `medium` → `Medium`, `high` → `High`, `critical` → `Critical`.
 
 ## What to do
 

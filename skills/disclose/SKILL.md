@@ -82,13 +82,13 @@ Draft disclosure content for an existing finding in a shape that maps one-to-one
 
    Normalise the ecosystem string to the exact GHSA enum — all lowercase, with these specific spellings: `rubygems` (not `RubyGems`), `npm`, `pip` (not `pypi` or `PyPI`), `maven`, `nuget`, `composer`, `go`, `rust`, `erlang`, `actions`, `pub`, `other`. If a scrutineer package has `ecosystem: "Packagist"`, emit `"composer"`; if `"Cargo"`, emit `"rust"`. Map anything unrecognised to `"other"`.
 
-   If the repository has no packages, omit the `vulnerabilities` array entirely and note in the `notes` field of `report.json` that this advisory is source-only (a maintainer filing it would still need to add an affected-product block manually).
+   If the repository has no packages, emit a single placeholder entry `[{"package": {"ecosystem": "other", "name": "{owner}/{repo}"}}]` and note in the `notes` field of `report.json` that this advisory is source-only. GitHub's REST endpoint rejects a body with no `vulnerabilities` entry, and the `ghsa` block in `report.json` is meant to be POSTable as-is.
 
    `vulnerable_functions` is optional; fill it only when the Trace field names specific exported symbols (e.g. `pkg.Foo`, `Class#method`). Leave empty otherwise.
 
    **`severity` / `cvss_vector_string`.** GHSA accepts exactly one of the two; prefer the CVSS vector when you can derive one confidently, fall back to the severity label otherwise.
 
-   Use CVSS 3.1. Derive each metric from the finding prose: `AV` from the attack surface described in Boundary, `AC` from how contrived the trigger is in Validation, `PR`/`UI` from whether the trigger needs authentication or human interaction, `S` from whether the impact crosses a trust boundary, and `C`/`I`/`A` from the dangerous behaviour in Rating. Write the full vector string (e.g. `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`).
+   Use CVSS 3.1. Derive each metric from the finding prose: `AV` from the attack surface described in Boundary, `AC` from how contrived the trigger is in Validation, `PR`/`UI` from whether the trigger needs authentication or human interaction, `S` from whether the impact crosses a trust boundary, and `C`/`I`/`A` from the dangerous behaviour in Rating. Write the full vector string (e.g. `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`). If any single metric cannot be derived from the prose, do not guess a value for it; omit `cvss_vector_string` entirely and emit the `severity` label instead.
 
    For the severity label fallback, map scrutineer's `severity` field (`Critical`/`High`/`Medium`/`Low`) to GHSA's lowercase `critical`/`high`/`medium`/`low`. If the finding has a pre-existing `cvss_vector`, leave it alone and reuse it here — do not overwrite analyst edits.
 

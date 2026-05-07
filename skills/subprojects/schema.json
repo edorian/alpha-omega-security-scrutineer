@@ -25,7 +25,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "Detected flavour: go-module, npm-package, python-package, rust-crate, composer-package, maven-module, gradle-module, ruby-gem, swift-package, service, monorepo-root."
+            "description": "Detected flavour: go-module, npm-package, python-package, rust-crate, composer-package, maven-module, gradle-module, ruby-gem, swift-package, service."
           },
           "description": {
             "type": "string",
