@@ -68,31 +68,11 @@ The full quality sweep:
 
 ## Adding a new scan type
 
-Scans are claude-code skills on disk. Adding one is a directory drop, no Go change. See [agentskills.io](https://agentskills.io/specification) for the SKILL.md format.
-
-1. Create `skills/my-skill/SKILL.md` with YAML frontmatter (`name`, `description`, optional `license`/`compatibility`/`metadata`). Scrutineer-specific metadata keys tell the worker how to handle the output:
-
-   ```yaml
-   ---
-   name: my-skill
-   description: Summarises the repository's build outputs.
-   metadata:
-     scrutineer.output_file: report.json
-     scrutineer.output_kind: freeform
-   ---
-   ```
-
-2. Write the body: instructions for claude. Reference the skill-facing API when the skill needs context scrutineer already holds (prior scans, maintainers, packages, etc.). See `openapi.yaml` at the repo root.
-
-3. Optional: `scripts/` for bundled helpers, `schema.json` for output validation. The schema is staged into the workspace so the model can read it, and after the run scrutineer validates `report.json` against it. By default a mismatch is logged to the scan transcript and the kind-specific parser still runs; start scrutineer with `-schema-strict` (or `schema_strict: true` in `scrutineer.yaml`) while iterating on a skill to turn that into a scan failure with the validator output in `Scan.Error`.
-
-4. Restart scrutineer; the skill loader picks it up on startup. No code change.
-
-When a scan runs, the worker stages the skill into `work/{scanID}/.claude/skills/{name}/`, writes a `context.json` with the repo identity plus `scrutineer.api_base` and `scrutineer.token`, and invokes `claude -p "Use the {name} skill..."`. The skill's output goes to `./report.json` (or whatever `output_file` names), is validated against `schema.json` if one is present, and scrutineer's parser for the declared `output_kind` handles it.
+Scans are claude-code skills on disk; adding one is a directory drop, no Go change. The frontmatter reference, `scrutineer.*` metadata keys, output kinds, workspace layout, `context.json` shape, and schema validation are documented in [skills.md](skills.md).
 
 ### When you do need Go changes
 
-- **New output kind** (row shape not already one of `findings`, `maintainers`, `packages`, `advisories`, `dependents`, `dependencies`, `repo_metadata`, `freeform`, `verify`): add a `parseXOutput` method in `internal/worker/skill_parsers.go` and a case in the switch in `internal/worker/skill.go`.
+- **New output kind**: add the kind to `OutputKinds` in `internal/skills/parse.go`, add a `parseXOutput` method in `internal/worker/skill_parsers.go`, and add a case to the switch in `internal/worker/skill.go`. Without the `OutputKinds` entry the bundled-skills test rejects the SKILL.md at startup.
 - **New API surface** for skills to read: add a handler in `internal/web/api_reads.go` and a route in `internal/web/api.go`, then document it in `openapi.yaml`.
 
 ## Regenerating cwe.json

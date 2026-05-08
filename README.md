@@ -105,23 +105,7 @@ When a repo is added, the `triage` skill is enqueued. Its SKILL.md lists the ski
 | `cna-match` | Matches a repository to its CVE Numbering Authority so disclosures route to the right contact |
 | `posture` | Records the repo's security posture (reporting policy, response history, hardening) on the Repository row |
 
-Edit `skills/triage/SKILL.md` to change what gets run by default. Drop new skill directories in `skills/` to add scan types; no code changes needed.
-
-## Adding or editing skills
-
-A skill is a directory with a `SKILL.md` (YAML frontmatter + markdown body), optionally plus a `schema.json`, a `scripts/` folder, and any other files the body references. The format is the [agentskills.io specification](https://agentskills.io/specification). Scrutineer-specific metadata under the frontmatter's `metadata` key:
-
-    scrutineer.output_file: report.json
-    scrutineer.output_kind: findings
-    scrutineer.max_turns:   30
-
-The output kind picks the parser. Supported: `findings`, `maintainers`, `packages`, `advisories`, `dependents`, `dependencies`, `repo_metadata`, `freeform`. Skills without these metadata keys run and their output is captured verbatim.
-
-Skills are loaded from `-skills ./path` (repeatable) or `-skills-repo https://github.com/org/skills` on startup. The `/skills` UI page lets you inspect them, or create/edit them in the browser.
-
-## Skill HTTP API
-
-While a skill runs, its workspace contains `./context.json` with `scrutineer.api_base` and a per-scan bearer `token`. The skill can call back into scrutineer to read scans and trigger more skills. See `openapi.yaml` at the repo root for the surface; the `triage` skill is the reference example.
+Edit `skills/triage/SKILL.md` to change what gets run by default. Drop new skill directories in `skills/` to add scan types; no code changes needed. See [docs/skills.md](docs/skills.md) for the frontmatter reference, the `scrutineer.*` metadata keys, the `context.json` shape, output kinds, schema validation, and the skill-facing HTTP API.
 
 ## Navigating the UI
 
@@ -225,9 +209,10 @@ See [SECURITY.md](SECURITY.md) for the reporting policy and [threatmodel.md](thr
 
 ## Further documentation
 
+- [docs/skills.md](docs/skills.md) -- bundled skills, writing your own, frontmatter and output-kind reference
 - [openapi.yaml](openapi.yaml) -- the skill-facing HTTP API
 - [docs/database.md](docs/database.md) -- full database schema reference
-- [docs/development.md](docs/development.md) -- project layout, adding skills, regenerating embedded data, running tests
+- [docs/development.md](docs/development.md) -- project layout, regenerating embedded data, running tests
 
 ## License
 
