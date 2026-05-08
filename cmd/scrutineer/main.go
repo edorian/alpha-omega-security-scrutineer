@@ -179,6 +179,15 @@ func run(log *slog.Logger) error {
 		log.Warn("ANTHROPIC_API_KEY looks like an OAuth token from `claude setup-token`; set it as CLAUDE_CODE_OAUTH_TOKEN instead")
 	}
 
+	// Suppress claude-code's telemetry, error reporting, auto-updater and
+	// feedback command, and semgrep's metrics POST. The docker runner sets
+	// these on the container too; setting them here covers the local
+	// runner, which inherits host env. The egress proxy already blocks the
+	// hosts these reach (DataDog log-intake, metrics.semgrep.dev) so
+	// without this the operator just sees denied-CONNECT noise.
+	_ = os.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+	_ = os.Setenv("SEMGREP_SEND_METRICS", "off")
+
 	if f.anthropicBaseURL == "" {
 		f.anthropicBaseURL = os.Getenv("ANTHROPIC_BASE_URL")
 	}
