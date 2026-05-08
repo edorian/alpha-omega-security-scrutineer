@@ -29,13 +29,12 @@ def main():
         return
 
     proc = subprocess.run(
-        ["zizmor", "--format", "json", ".github/workflows"],
+        ["zizmor", "--no-exit-codes", "--format", "json", ".github/workflows"],
         cwd="./src",
         capture_output=True,
         text=True,
     )
-    # zizmor exits non-zero when it has findings; that's not a failure.
-    if proc.returncode not in (0, 14):
+    if proc.returncode != 0:
         print(json.dumps({"findings": [], "error": proc.stderr.strip()[:2000]}))
         return
 
@@ -57,8 +56,8 @@ def main():
             sym = locations[0].get("symbolic") or {}
             key = sym.get("key") or {}
             path = key.get("local", {}).get("given_path") or key.get("Local", {}).get("given_path") or "workflow"
-            line = locations[0].get("concrete", {}).get("location", {}).get("start_point", {}).get("row")
-            loc = f"{path}:{line}" if line else path
+            row = locations[0].get("concrete", {}).get("location", {}).get("start_point", {}).get("row")
+            loc = f"{path}:{row + 1}" if row is not None else path
         findings.append({
             "id": f"F{i}",
             "title": r.get("ident") or r.get("desc") or "zizmor finding",
