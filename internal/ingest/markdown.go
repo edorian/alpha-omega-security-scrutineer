@@ -50,7 +50,7 @@ func parseMarkdown(data []byte) ([]Result, error) {
 
 		loc, repoURL := parseMarkdownLocation(sections["Location"])
 		if repoURL == "" {
-			repoURL = meta["Repository"]
+			repoURL = expandRepoSlug(meta["Repository"])
 		}
 		entries = append(entries, entry{
 			repoURL: repoURL,

@@ -120,8 +120,8 @@ func TestParseCSV(t *testing.T) {
 	}
 
 	widget := results[0]
-	if widget.RepoURL != "example/widget" {
-		t.Errorf("RepoURL = %q, want example/widget", widget.RepoURL)
+	if widget.RepoURL != "https://github.com/example/widget" {
+		t.Errorf("RepoURL = %q, want slug expanded to github.com URL", widget.RepoURL)
 	}
 	if widget.Tool != "scanner.example" {
 		t.Errorf("Tool = %q, want scanner.example (from Finding URL host)", widget.Tool)
@@ -156,7 +156,7 @@ func TestParseCSV(t *testing.T) {
 	}
 
 	other := results[1]
-	if other.RepoURL != "example/other" {
+	if other.RepoURL != "https://github.com/example/other" {
 		t.Errorf("second RepoURL = %q", other.RepoURL)
 	}
 	if other.Findings[0].Severity != "critical" || other.Findings[0].CWE != "CWE-89" {

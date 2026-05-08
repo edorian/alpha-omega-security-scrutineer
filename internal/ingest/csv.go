@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -66,7 +67,7 @@ func parseCSV(data []byte) ([]Result, error) {
 		res, ok := byRepo[repo]
 		if !ok {
 			res = &Result{
-				RepoURL: repo,
+				RepoURL: expandRepoSlug(repo),
 				Tool:    hostOf(col(row, "Finding URL")),
 			}
 			byRepo[repo] = res
@@ -90,6 +91,19 @@ func parseCSV(data []byte) ([]Result, error) {
 		out = append(out, *byRepo[repo])
 	}
 	return out, nil
+}
+
+var slugRe = regexp.MustCompile(`^[\w.-]+/[\w.-]+$`)
+
+// expandRepoSlug turns a bare "owner/repo" into a GitHub URL. The CSV
+// export carries only the slug and the producer is GitHub-only, so
+// this is the only sensible expansion; anything that already looks
+// like a URL or doesn't match the slug shape passes through unchanged.
+func expandRepoSlug(s string) string {
+	if slugRe.MatchString(s) {
+		return "https://github.com/" + s
+	}
+	return s
 }
 
 func joinLocation(path, line string) string {
