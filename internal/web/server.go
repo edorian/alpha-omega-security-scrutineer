@@ -405,7 +405,9 @@ func (s *Server) repoList(w http.ResponseWriter, r *http.Request) {
 		// Correlated subquery keeps the existing Count/Find chain intact
 		// (a JOIN+GROUP BY would change what Count(&total) returns). Low-
 		// thousands of repos so the per-row subselect is fine on sqlite.
-		q = q.Order("(SELECT COUNT(*) FROM findings WHERE findings.repository_id = repositories.id) desc, updated_at desc")
+		// Scanner-skill findings (zizmor, semgrep, …) are excluded so the
+		// list reflects curated audit output, matching the repo Findings tab.
+		q = q.Order("(" + deepDiveFindingsCountSQL + ") desc, updated_at desc")
 	default:
 		sort = defaultSort
 		q = q.Order("updated_at desc")
@@ -432,9 +434,13 @@ func (s *Server) repoList(w http.ResponseWriter, r *http.Request) {
 			N            int
 		}
 		var counts []rowCount
+		// Scope to deep-dive findings only so the column matches the repo
+		// page's Findings tab; scanner output (zizmor/semgrep) is reachable
+		// via that repo's Scanners tab.
 		s.DB.Model(&db.Finding{}).
 			Select("repository_id, COUNT(*) AS n").
 			Where("repository_id IN ?", repoIDs).
+			Where("scan_id IN (?)", deepDiveScanIDs(s.DB)).
 			Group("repository_id").
 			Scan(&counts)
 		for _, c := range counts {
@@ -539,13 +545,18 @@ func (s *Server) orgsList(w http.ResponseWriter, r *http.Request) {
 			N     int
 		}
 		var counts []c
+		// LEFT JOIN scans so the COUNT only includes findings whose scan is
+		// the curated audit. Tool-scanner output (zizmor, semgrep) is shown
+		// per-repo in the Scanners tab, not in cross-org totals.
 		s.DB.Raw(`
 			SELECT r.owner, COUNT(f.id) AS n
 			FROM repositories r
 			LEFT JOIN findings f ON f.repository_id = r.id
+			LEFT JOIN scans s ON s.id = f.scan_id
 			WHERE r.owner != ''
+			  AND (s.skill_name IS NULL OR s.skill_name = '' OR s.skill_name = ?)
 			GROUP BY r.owner
-		`).Scan(&counts)
+		`, deepDiveSkillName).Scan(&counts)
 		for _, x := range counts {
 			findingCounts[x.Owner] = x.N
 		}
@@ -618,7 +629,9 @@ func (s *Server) orgShow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Per-repo finding count for the repos table, plus the full finding
-	// list for the Findings tab.
+	// list for the Findings tab. Scanner skills (zizmor, semgrep) are kept
+	// out of both so the org summary matches the repo Findings tab; the
+	// per-repo Scanners tab is where that output lives.
 	findingCounts := map[uint]int{}
 	type rowCount struct {
 		RepositoryID uint
@@ -628,6 +641,7 @@ func (s *Server) orgShow(w http.ResponseWriter, r *http.Request) {
 	s.DB.Model(&db.Finding{}).
 		Select("repository_id, COUNT(*) AS n").
 		Where("repository_id IN ?", repoIDs).
+		Where("scan_id IN (?)", deepDiveScanIDs(s.DB)).
 		Group("repository_id").Scan(&counts)
 	for _, c := range counts {
 		findingCounts[c.RepositoryID] = c.N
@@ -639,6 +653,7 @@ func (s *Server) orgShow(w http.ResponseWriter, r *http.Request) {
 	// before Medium, which misreads for a stakeholder scanning the tab.
 	var findings []db.Finding
 	s.DB.Where("repository_id IN ?", repoIDs).
+		Where("scan_id IN (?)", deepDiveScanIDs(s.DB)).
 		Order(severityOrder).Order("id desc").
 		Limit(orgTabLimit).Find(&findings)
 	reposByID := loadRepoMap(s.DB, findings)
@@ -714,13 +729,18 @@ func (s *Server) maintainersList(w http.ResponseWriter, r *http.Request) {
 			N            int
 		}
 		var counts []row
+		// LEFT JOIN scans so the COUNT only includes deep-dive findings.
+		// Scanner output (zizmor, semgrep) is per-repo lint noise and
+		// shouldn't drive maintainer routing.
 		s.DB.Raw(`
 			SELECT rm.maintainer_id, COUNT(f.id) AS n
 			FROM repository_maintainers rm
 			LEFT JOIN findings f ON f.repository_id = rm.repository_id
+			LEFT JOIN scans s ON s.id = f.scan_id
 			WHERE rm.maintainer_id IN ?
+			  AND (s.skill_name IS NULL OR s.skill_name = '' OR s.skill_name = ?)
 			GROUP BY rm.maintainer_id
-		`, ids).Scan(&counts)
+		`, ids, deepDiveSkillName).Scan(&counts)
 		for _, c := range counts {
 			findingCounts[c.MaintainerID] = c.N
 		}
@@ -767,7 +787,12 @@ func (s *Server) maintainerShow(w http.ResponseWriter, r *http.Request) {
 	}
 	var findings []db.Finding
 	if len(repoIDs) > 0 {
-		s.DB.Where("repository_id IN ?", repoIDs).Order("id desc").Find(&findings)
+		// Same filter the Findings tab applies elsewhere: deep-dive only,
+		// keeping scanner noise off the maintainer view used for disclosure
+		// routing.
+		s.DB.Where("repository_id IN ?", repoIDs).
+			Where("scan_id IN (?)", deepDiveScanIDs(s.DB)).
+			Order("id desc").Find(&findings)
 	}
 	reposByID := loadRepoMap(s.DB, findings)
 	s.render(w, r, "maintainer_show.html", map[string]any{
@@ -805,6 +830,13 @@ var severityOrder = `CASE severity
 
 func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 	q := s.DB.Model(&db.Finding{})
+	// Default to deep-dive findings only; scanner skills (zizmor, semgrep)
+	// are noisy enough to drown out the audit list. ?scanners=1 includes
+	// them and is exposed as a toggle in the UI.
+	scanners := r.URL.Query().Get("scanners") == "1"
+	if !scanners {
+		q = q.Where("scan_id IN (?)", deepDiveScanIDs(s.DB))
+	}
 	sev := r.URL.Query().Get("severity")
 	if sev != "" {
 		q = q.Where("severity = ?", sev)
@@ -855,10 +887,16 @@ func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 	var missedTotal int64
 	s.DB.Model(&db.Finding{}).Where("missed_count > 0").Count(&missedTotal)
 
+	var scannerTotal int64
+	s.DB.Model(&db.Finding{}).
+		Where("scan_id NOT IN (?)", deepDiveScanIDs(s.DB)).
+		Count(&scannerTotal)
+
 	s.render(w, r, "findings.html", map[string]any{
 		"Findings": rows, "Page": page, "Severity": sev, "Sort": sort,
 		"Repos": reposByID, "Q": search, "AnySubPath": anySubPath,
 		"Owner": owner, "Missed": missed, "MissedTotal": missedTotal,
+		"Scanners": scanners, "ScannerTotal": scannerTotal,
 	})
 }
 
@@ -926,6 +964,24 @@ const (
 	// section of the deep-dive report so older scans keep rendering.
 	threatModelSkillName = "threat-model"
 )
+
+// deepDiveFindingsCountSQL is a correlated subselect that counts deep-dive
+// findings for the surrounding repositories row. Used in the repos list
+// "findings" sort. Tool-scanner skills are excluded so the ordering matches
+// the counts shown in the Findings column.
+const deepDiveFindingsCountSQL = `SELECT COUNT(*) FROM findings f
+    WHERE f.repository_id = repositories.id
+      AND f.scan_id IN (SELECT id FROM scans
+        WHERE skill_name = '` + deepDiveSkillName + `' OR skill_name = '' OR skill_name IS NULL)`
+
+// deepDiveScanIDs returns a GORM subquery selecting scan IDs that belong to
+// the curated audit (security-deep-dive) or to legacy/empty skill_name rows.
+// Use it as a `scan_id IN (?)` filter to keep listings consistent with the
+// repo Findings tab.
+func deepDiveScanIDs(gdb *gorm.DB) *gorm.DB {
+	return gdb.Model(&db.Scan{}).Select("id").
+		Where("skill_name = ? OR skill_name = '' OR skill_name IS NULL", deepDiveSkillName)
+}
 
 func (s *Server) addRepoAndScan(w http.ResponseWriter, r *http.Request, repoURL string) {
 	input, err := ParseRepoInput(repoURL)
@@ -1443,10 +1499,35 @@ func (s *Server) repoShow(w http.ResponseWriter, r *http.Request) {
 	// deep-dive run. rejected/duplicate are analyst-dispositioned noise and
 	// stay off the tab; everything else is shown so an empty or failed
 	// latest scan does not hide earlier results (#72).
-	var findings []db.Finding
+	var allFindings []db.Finding
 	s.DB.Where("repository_id = ? AND status NOT IN ?", repo.ID,
 		[]db.FindingLifecycle{db.FindingRejected, db.FindingDuplicate}).
-		Order(severityOrder).Order("id desc").Find(&findings)
+		Order(severityOrder).Order("id desc").Find(&allFindings)
+
+	// Findings from the structured audit (security-deep-dive) and findings
+	// from tool-style scanners (zizmor, semgrep, …) render in separate tabs
+	// so the curated audit list isn't drowned out by lint noise. Anything
+	// without a matching scan is treated as deep-dive to avoid losing it.
+	scanSkill := map[uint]string{}
+	if len(allFindings) > 0 {
+		var rows []struct {
+			ID        uint
+			SkillName string
+		}
+		s.DB.Raw(`SELECT id, COALESCE(skill_name, '') AS skill_name FROM scans WHERE repository_id = ?`, repo.ID).Scan(&rows)
+		for _, row := range rows {
+			scanSkill[row.ID] = row.SkillName
+		}
+	}
+	var findings, scannerFindings []db.Finding
+	for _, f := range allFindings {
+		name := scanSkill[f.ScanID]
+		if name == "" || name == deepDiveSkillName {
+			findings = append(findings, f)
+		} else {
+			scannerFindings = append(scannerFindings, f)
+		}
+	}
 
 	var maintainers []db.Maintainer
 	s.DB.Joins("JOIN repository_maintainers ON repository_maintainers.maintainer_id = maintainers.id").
@@ -1495,10 +1576,12 @@ func (s *Server) repoShow(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]any{
 		"Repo": repo, "Scans": scans, "Latest": latest,
-		"Findings":  findings,
-		"TotalCost": totalCost,
-		"TMCommit":  tmCommit,
-		"Deps":      deps, "Pkgs": pkgs, "Dependents": dependents, "Advisories": advisories, "Maintainers": maintainers, "ThreatModel": threatModel,
+		"Findings":        findings,
+		"ScannerFindings": scannerFindings,
+		"ScanSkill":       scanSkill,
+		"TotalCost":       totalCost,
+		"TMCommit":        tmCommit,
+		"Deps":            deps, "Pkgs": pkgs, "Dependents": dependents, "Advisories": advisories, "Maintainers": maintainers, "ThreatModel": threatModel,
 		"KnownURLs": knownURLs, "KnownPURLs": knownPURLs,
 		"Skills":       activeSkills,
 		"Subprojects":  subprojects,
