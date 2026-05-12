@@ -206,6 +206,14 @@ The config file can also replace the model pick list and pin the default model:
       - name: Opus
         id:   claude-opus-4-7
 
+## Sandboxed Claude Code configs
+
+In `--no-docker` mode the `claude` subprocess inherits your `~/.claude/settings.json`, so [sandbox settings](https://code.claude.com/docs/en/sandboxing) that restrict network or filesystem access there will fail skills that need them. Point `claude` at a separate config directory just for scrutineer runs:
+
+    CLAUDE_CONFIG_DIR=~/.claude-scrutineer go run ./cmd/scrutineer -skills ./skills
+
+Copy your `settings.json` into that directory and drop the sandbox keys; your normal Claude Code config is untouched. Docker mode is not affected: `claude` runs inside the container with its own environment regardless of the host config.
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) for the reporting policy and [threatmodel.md](threatmodel.md) for the full threat model. The short version: scanning a repository is equivalent to running code from it. The containerised runner (when available) isolates each scan, but the default bare-metal mode runs everything as your user. Only scan repositories you'd be willing to clone and build locally.
