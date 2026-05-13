@@ -119,9 +119,9 @@
           </button>
           <div data-popover aria-hidden="true" data-align="end">
             <div role="menu">
-              <a role="menuitem" href="/sboms/{{.SBOM.ID}}?scope={{.Scope}}&category={{.Category}}&sort={{.Sort}}">All severities</a>
+              <a role="menuitem" href="/sboms/{{.SBOM.ID}}?scope={{.Scope}}&category={{.Category}}&sort={{.Sort}}#st2">All severities</a>
               {{range (list "Critical" "High" "Medium" "Low")}}
-                <a role="menuitem" href="/sboms/{{$.SBOM.ID}}?scope={{$.Scope}}&category={{$.Category}}&sort={{$.Sort}}&severity={{.}}"
+                <a role="menuitem" href="/sboms/{{$.SBOM.ID}}?scope={{$.Scope}}&category={{$.Category}}&sort={{$.Sort}}&severity={{.}}#st2"
                    {{if eq . $.Severity}}aria-current="true"{{end}}>{{.}}</a>
               {{end}}
             </div>
@@ -135,12 +135,12 @@
           </button>
           <div data-popover aria-hidden="true" data-align="end">
             <div role="menu">
-              <a role="menuitem" href="/sboms/{{.SBOM.ID}}?scope={{.Scope}}&severity={{.Severity}}&sort={{.Sort}}">All categories</a>
+              <a role="menuitem" href="/sboms/{{.SBOM.ID}}?scope={{.Scope}}&severity={{.Severity}}&sort={{.Sort}}#st2">All categories</a>
               {{range .Categories}}
-                <a role="menuitem" href="/sboms/{{$.SBOM.ID}}?scope={{$.Scope}}&severity={{$.Severity}}&sort={{$.Sort}}&category={{.}}"
+                <a role="menuitem" href="/sboms/{{$.SBOM.ID}}?scope={{$.Scope}}&severity={{$.Severity}}&sort={{$.Sort}}&category={{.}}#st2"
                    {{if eq . $.Category}}aria-current="true"{{end}}>{{catlabel .}}</a>
               {{end}}
-              <a role="menuitem" href="/sboms/{{.SBOM.ID}}?scope={{.Scope}}&severity={{.Severity}}&sort={{.Sort}}&category={{.Uncategorized}}"
+              <a role="menuitem" href="/sboms/{{.SBOM.ID}}?scope={{.Scope}}&severity={{.Severity}}&sort={{.Sort}}&category={{.Uncategorized}}#st2"
                  {{if eq .Uncategorized .Category}}aria-current="true"{{end}}>{{.Uncategorized}}</a>
             </div>
           </div>
@@ -154,7 +154,7 @@
           <div data-popover aria-hidden="true" data-align="end">
             <div role="menu">
               {{range (list "newest" "severity" "repository")}}
-                <a role="menuitem" href="/sboms/{{$.SBOM.ID}}?scope={{$.Scope}}&severity={{$.Severity}}&category={{$.Category}}&sort={{.}}"
+                <a role="menuitem" href="/sboms/{{$.SBOM.ID}}?scope={{$.Scope}}&severity={{$.Severity}}&category={{$.Category}}&sort={{.}}#st2"
                    {{if eq . $.Sort}}aria-current="true"{{end}}>{{.}}</a>
               {{end}}
             </div>

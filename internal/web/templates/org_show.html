@@ -78,12 +78,12 @@
         </button>
         <div data-popover aria-hidden="true" data-align="end">
           <div role="menu">
-            <a role="menuitem" href="/orgs/{{$owner}}">All categories</a>
+            <a role="menuitem" href="/orgs/{{$owner}}#ot2">All categories</a>
             {{range .Categories}}
-              <a role="menuitem" href="/orgs/{{$owner}}?category={{.}}"
+              <a role="menuitem" href="/orgs/{{$owner}}?category={{.}}#ot2"
                  {{if eq . $.Category}}aria-current="true"{{end}}>{{catlabel .}}</a>
             {{end}}
-            <a role="menuitem" href="/orgs/{{$owner}}?category={{.Uncategorized}}"
+            <a role="menuitem" href="/orgs/{{$owner}}?category={{.Uncategorized}}#ot2"
                {{if eq .Uncategorized .Category}}aria-current="true"{{end}}>{{.Uncategorized}}</a>
           </div>
         </div>
