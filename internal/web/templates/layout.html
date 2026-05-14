@@ -210,5 +210,7 @@
   {{else if eq . "failed"}}<span class="badge-destructive"><i data-lucide="x"></i> failed</span>
   {{else if eq . "cancelled"}}<span class="badge-outline"><i data-lucide="circle-slash"></i> cancelled</span>
   {{else if eq . "running"}}<span class="badge-primary"><i data-lucide="loader-circle" class="animate-spin"></i> running</span>
+  {{else if eq . "active"}}<span class="badge-secondary"><i data-lucide="circle-check"></i> active</span>
+  {{else if eq . "inactive"}}<span class="badge-outline"><i data-lucide="moon"></i> inactive</span>
   {{else}}<span class="badge-outline"><i data-lucide="clock"></i> {{.}}</span>{{end}}
 {{end}}
