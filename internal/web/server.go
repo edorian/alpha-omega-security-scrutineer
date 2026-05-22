@@ -156,6 +156,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /maintainers/{id}/do-not-contact", s.maintainerDoNotContact)
 	mux.HandleFunc("GET /findings", s.findings)
 	mux.HandleFunc("GET /findings/{id}", s.findingShow)
+	mux.HandleFunc("GET /findings/{id}/report.md", s.findingReport)
 	mux.HandleFunc("POST /findings/{id}/status", s.findingStatus)
 	mux.HandleFunc("POST /findings/{id}/verify", s.findingVerify)
 	mux.HandleFunc("POST /findings/{id}/disclose", s.findingDisclose)
@@ -1095,6 +1096,10 @@ func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
 	if patchScan, patchRep, _ := s.latestPatchScan(f.ID); patchRep != nil {
 		data["PatchScan"] = patchScan
 		data["Patch"] = patchRep
+	}
+	if reproScan, reproRep := s.latestReproduceScan(f.ID); reproScan != nil {
+		data["ReproduceScan"] = reproScan
+		data["Reproduce"] = reproRep
 	}
 	s.render(w, "finding_show.html", data)
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,5 +140,33 @@ func TestLoad_rejectsUnparseable(t *testing.T) {
 	path := write(t, "addr: [this is not valid yaml: for a string")
 	if _, err := Load(path); err == nil {
 		t.Error("expected parse error")
+	}
+}
+
+// TestLoad_rejectsLeadingSpaceUncomment locks down the silent-failure
+// mode that swallowed `default_model:` and `models:` for two days: a
+// user uncommenting `# runner_image: …` left a single leading space
+// behind. yaml.Unmarshal happily took the first one-key document and
+// returned, dropping every later top-level key (and so every scan ran
+// on the built-in default model). The new loader must error instead so
+// the operator notices the typo at startup.
+func TestLoad_rejectsLeadingSpaceUncomment(t *testing.T) {
+	path := write(t, " runner_image: ghcr.io/x:latest\n\ndefault_model: claude-opus-4-7\n")
+	cfg, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected error for leading-space top-level key; cfg=%+v", cfg)
+	}
+	if !strings.Contains(err.Error(), "leading") {
+		t.Errorf("error should explain the cause, got %v", err)
+	}
+}
+
+// TestLoad_rejectsUnknownFields is a sister guard: a typo'd key
+// (`runer_image:` say) used to be silently ignored. KnownFields(true)
+// makes that loud.
+func TestLoad_rejectsUnknownFields(t *testing.T) {
+	path := write(t, "runer_image: ghcr.io/x:latest\n")
+	if _, err := Load(path); err == nil {
+		t.Error("expected error for unknown field")
 	}
 }

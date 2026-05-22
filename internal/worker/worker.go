@@ -37,6 +37,7 @@ type Worker struct {
 	DataDir     string // workspace root for clones
 	APIBase     string // base URL for the scrutineer skill API (http://host:port/api)
 	Runner      SkillRunner
+	Queue       *queue.Queue                                  // optional; enables auto-trigger of follow-on skills (e.g. reproduce on new finding)
 	OnEvent     func(scanID, repoID uint, name, data string) // optional SSE bridge
 	ScanTimeout time.Duration
 
@@ -135,6 +136,14 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 
 		report, err := h(ctx, &scan, emit)
 
+		// Preserve the raw report unconditionally. Even on a parse error
+		// the model's output is the most expensive artefact in the scan;
+		// dropping it because parseFindingsOutput rejected the JSON
+		// (#scan-42 lost a full security-deep-dive report this way) means
+		// the operator has no recovery path. The terminal-state assignment
+		// below still flips Status/Error correctly.
+		scan.Report = report
+
 		fin := time.Now()
 		scan.FinishedAt = &fin
 		switch {
@@ -152,7 +161,6 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 			emit(Event{Kind: KindError, Text: err.Error()})
 		default:
 			scan.Status = db.ScanDone
-			scan.Report = report
 		}
 		if saveErr := w.DB.Save(&scan).Error; saveErr != nil {
 			return saveErr

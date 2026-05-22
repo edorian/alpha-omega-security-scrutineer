@@ -31,9 +31,7 @@ func (s *Server) orgReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body := renderOrgReport(s.DB, owner, repos)
-	filename := fmt.Sprintf("scrutineer-%s-findings-%s.md",
-		sanitiseFilename(owner),
-		time.Now().UTC().Format("20060102"))
+	filename := exportFilename(slugify(owner), "findings")
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	_, _ = w.Write([]byte(body))

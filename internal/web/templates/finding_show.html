@@ -12,6 +12,10 @@
 <h2 class="text-2xl font-semibold mt-1 mb-4 flex items-center gap-3">
   {{$f.Title}}
   {{template "finding-status" (fstatus $f.Status)}}
+  <a class="btn-outline-sm ml-auto" href="/findings/{{$f.ID}}/report.md"
+     title="Download a clean markdown summary for sharing">
+    <i data-lucide="download"></i> Export
+  </a>
 </h2>
 
 {{if $f.Labels}}
@@ -144,6 +148,164 @@
     <section class="pb-4"><pre class="log">{{$f.Validation}}</pre></section>
   </details>
   {{end}}
+
+  {{$rr := .Reproduce}}{{$rs := .ReproduceScan}}
+  <details {{if $rr}}open{{end}} class="group border-b" data-repro-root>
+    <summary class="w-full outline-none rounded-md focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+      <h3 class="flex flex-1 items-center justify-between gap-4 py-4 text-sm font-medium hover:underline">
+        Reproduction
+        {{if $rr}}{{if $rr.Outcome}}
+          {{if eq $rr.Outcome "reproduced"}}
+            <span class="badge-destructive">{{$rr.Outcome}}</span>
+          {{else if eq $rr.Outcome "not_reproducible"}}
+            <span class="badge-secondary">{{$rr.Outcome}}</span>
+          {{else}}
+            <span class="badge-outline">{{$rr.Outcome}}</span>
+          {{end}}
+        {{end}}{{end}}
+        {{if $rs}}<span class="text-muted-foreground ml-auto mr-2 text-xs">
+          <a href="/scans/{{$rs.ID}}" class="hover:underline">scan #{{$rs.ID}}</a>
+        </span>{{end}}
+        <i data-lucide="chevron-down" class="text-muted-foreground size-4 shrink-0 transition-transform duration-200 group-open:rotate-180"></i>
+      </h3>
+    </summary>
+    <section class="pb-4 grid gap-4">
+      {{if not $rr}}
+        <p class="text-sm text-muted-foreground">
+          {{if $rs}}
+            The <code>reproduce</code> skill ran (scan #{{$rs.ID}}) but produced no parseable
+            <code>report.json</code>. Check the
+            <a href="/scans/{{$rs.ID}}" class="underline underline-offset-2">scan log</a>.
+          {{else}}
+            No <code>reproduce</code> scan has completed for this finding. New findings
+            auto-enqueue a reproduce run; one may still be queued or in flight.
+          {{end}}
+        </p>
+      {{else if $rr.Error}}
+        <p class="text-sm">Could not parse the reproduce report: <code>{{$rr.Error}}</code></p>
+      {{else}}
+        <dl class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+          <div><dt class="text-muted-foreground">Language</dt>
+            <dd>{{if $rr.Language}}<code>{{$rr.Language}}</code>{{else}}-{{end}}</dd></div>
+          <div><dt class="text-muted-foreground">Exit code</dt>
+            <dd>{{if $rr.ExitCode}}<code>{{$rr.ExitCode}}</code>{{else}}-{{end}}</dd></div>
+          {{if $rs}}<div><dt class="text-muted-foreground">Ran at</dt>
+            <dd>{{if $rs.FinishedAt}}{{$rs.FinishedAt.Format "2006-01-02 15:04"}}{{else}}-{{end}}</dd></div>{{end}}
+          {{if $rs}}<div><dt class="text-muted-foreground">Model</dt>
+            <dd>{{$rs.Model}}</dd></div>{{end}}
+        </dl>
+
+        {{if $rr.Command}}
+        <div class="grid gap-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-muted-foreground">Command</span>
+            <button type="button" class="btn-outline-sm" data-copy>
+              <i data-lucide="copy" class="size-3"></i> Copy
+            </button>
+          </div>
+          <pre class="log" data-copy-src style="white-space: pre;">{{$rr.Command}}</pre>
+        </div>
+        {{end}}
+
+        {{if $rr.PoC}}
+        <div class="grid gap-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-muted-foreground">
+              PoC{{if $rr.Language}} ({{$rr.Language}}){{end}}
+            </span>
+            <button type="button" class="btn-outline-sm" data-copy>
+              <i data-lucide="copy" class="size-3"></i> Copy
+            </button>
+          </div>
+          <pre class="log" data-copy-src style="white-space: pre;">{{$rr.PoC}}</pre>
+        </div>
+        {{end}}
+
+        {{if $rr.Fixtures}}
+        <div class="grid gap-2">
+          <span class="text-xs text-muted-foreground">Fixtures</span>
+          {{range $rr.Fixtures}}
+          <div class="grid gap-1">
+            <div class="flex items-center justify-between gap-2">
+              <code class="text-xs">{{.Path}}</code>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-muted-foreground">{{.Encoding}}</span>
+                <button type="button" class="btn-outline-sm" data-copy>
+                  <i data-lucide="copy" class="size-3"></i> Copy
+                </button>
+              </div>
+            </div>
+            <pre class="log" data-copy-src style="white-space: pre;">{{.Content}}</pre>
+          </div>
+          {{end}}
+        </div>
+        {{end}}
+
+        {{if $rr.Transcript}}
+        <div class="grid gap-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-muted-foreground">Transcript</span>
+            <button type="button" class="btn-outline-sm" data-copy>
+              <i data-lucide="copy" class="size-3"></i> Copy
+            </button>
+          </div>
+          <pre class="log" data-copy-src>{{$rr.Transcript}}</pre>
+        </div>
+        {{end}}
+
+        {{if $rr.Assumptions}}
+        <div class="grid gap-1">
+          <span class="text-xs text-muted-foreground">Assumptions</span>
+          <p class="text-sm">{{$rr.Assumptions}}</p>
+        </div>
+        {{end}}
+
+        {{if $rr.Cleanup}}
+        <div class="grid gap-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-muted-foreground">Cleanup</span>
+            <button type="button" class="btn-outline-sm" data-copy>
+              <i data-lucide="copy" class="size-3"></i> Copy
+            </button>
+          </div>
+          <pre class="log" data-copy-src style="white-space: pre;">{{$rr.Cleanup}}</pre>
+        </div>
+        {{end}}
+
+        {{if $rr.Notes}}
+        <div class="grid gap-1">
+          <span class="text-xs text-muted-foreground">Notes</span>
+          <p class="text-sm">{{$rr.Notes}}</p>
+        </div>
+        {{end}}
+
+        {{if $rs}}
+        <div>
+          <a class="btn-outline-sm" href="/scans/{{$rs.ID}}">
+            <i data-lucide="arrow-up-right"></i> View scan
+          </a>
+        </div>
+        {{end}}
+      {{end}}
+    </section>
+  </details>
+  <script>
+  (function () {
+    var root = document.currentScript.previousElementSibling;
+    if (!root) return;
+    root.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-copy]');
+      if (!btn) return;
+      var src = btn.closest('.grid').querySelector('[data-copy-src]');
+      if (!src) return;
+      navigator.clipboard.writeText(src.textContent).then(function () {
+        document.dispatchEvent(new CustomEvent('basecoat:toast', { detail: { config: {
+          category: 'success', title: 'Copied to clipboard'
+        }}}));
+      });
+    });
+  })();
+  </script>
 
   {{if $f.PriorArt}}
   <details class="group border-b">

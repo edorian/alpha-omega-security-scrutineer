@@ -53,9 +53,10 @@ type flags struct {
 	addr        string
 	dataDir     string
 	effort      string
-	noDocker    bool
-	runnerImage string
-	skillsRepo  string
+	noDocker         bool
+	runnerImage      string
+	runnerDockerfile string
+	skillsRepo       string
 	concurrency int
 	cloneMode   string
 	scanTimeout time.Duration
@@ -72,9 +73,10 @@ func parseFlags() *flags {
 	flag.StringVar(&f.configPath, "config", "", "path to YAML config file (default: ./scrutineer.yaml if present)")
 	flag.StringVar(&f.addr, "addr", "127.0.0.1:8080", "listen address")
 	flag.StringVar(&f.dataDir, "data", "./data", "data directory (db + workspaces)")
-	flag.StringVar(&f.effort, "effort", "high", "claude effort")
+	flag.StringVar(&f.effort, "effort", "xhigh", "claude effort")
 	flag.BoolVar(&f.noDocker, "no-docker", false, "disable containerised runner even if docker is available")
-	flag.StringVar(&f.runnerImage, "runner-image", worker.DefaultRunnerImage, "docker image for per-job containers")
+	flag.StringVar(&f.runnerImage, "runner-image", "", "docker image for per-job containers (default: build from ./Dockerfile.runner — scrutineer never pulls runner images from a registry)")
+	flag.StringVar(&f.runnerDockerfile, "runner-dockerfile", worker.DefaultRunnerDockerfile, "path to the Dockerfile used when --runner-image is unset")
 	flag.StringVar(&f.skillsRepo, "skills-repo", "", "clone skills from this git https URL on startup")
 	flag.IntVar(&f.concurrency, "concurrency", queue.DefaultWorkerConcurrency, "number of scans to run in parallel")
 	flag.StringVar(&f.cloneMode, "clone", "shallow", "clone depth: shallow (--depth 1) or full")
@@ -206,10 +208,24 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("start egress proxy: %w", err)
 		}
+		// When the operator did not pin a specific runner image, build
+		// from the local Dockerfile.runner. scrutineer never pulls runner
+		// images from a registry — every container is built from source
+		// the binary ships with so the analyst can audit what's running.
+		image := f.runnerImage
+		if image == "" {
+			built, berr := worker.EnsureLocalRunnerImage(context.Background(), f.runnerDockerfile, log)
+			if berr != nil {
+				return fmt.Errorf("build runner image: %w", berr)
+			}
+			image = built
+		} else {
+			log.Info("using operator-pinned runner image", "image", image)
+		}
 		log.Info("docker detected, using containerised runner",
-			"image", f.runnerImage, "egress_proxy_port", port, "egress_allow", len(allow))
+			"image", image, "egress_proxy_port", port, "egress_allow", len(allow))
 		runner = worker.DockerRunner{
-			Image:     f.runnerImage,
+			Image:     image,
 			Effort:    f.effort,
 			ProxyURL:  worker.ProxyURL(token, port),
 			FullClone: f.fullClone(),
@@ -229,6 +245,7 @@ func run(log *slog.Logger) error {
 		DataDir:     filepath.Join(f.dataDir, "work"),
 		APIBase:     apiBase,
 		Runner:      runner,
+		Queue:       q,
 		ScanTimeout: f.scanTimeout,
 		OnEvent: func(scanID, repoID uint, name, data string) {
 			broker.Publish(web.Event{Name: name, Data: data, ScanID: scanID, RepoID: repoID})

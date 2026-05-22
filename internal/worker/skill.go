@@ -2,11 +2,16 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gorm.io/gorm"
 
 	"scrutineer/internal/db"
 )
@@ -204,10 +209,70 @@ func (w *Worker) parseFindingsOutput(scan *db.Scan, report string, emit func(Eve
 			return fmt.Errorf("save finding: %w", cerr)
 		}
 		created++
+		w.maybeEnqueueReproduce(scan, f)
 	}
 	emit(Event{Kind: KindText, Text: fmt.Sprintf("parsed %d finding(s): %d new, %d re-observed",
 		len(findings), created, observed)})
 	return nil
+}
+
+// reproduceSkillName is the skill auto-enqueued for every newly-created
+// finding. Keep in sync with web.reproduceSkillName if a UI button is added.
+const reproduceSkillName = "reproduce"
+
+// maybeEnqueueReproduce fires a finding-scoped `reproduce` scan whenever a
+// fresh finding lands in the DB. Best-effort: a missing/inactive skill or a
+// nil queue (tests, embedded use) silently skips. The originating scan's
+// model carries forward so the follow-up runs on the same tier the analyst
+// chose for the parent audit.
+func (w *Worker) maybeEnqueueReproduce(parent *db.Scan, f *db.Finding) {
+	if w == nil || w.Queue == nil || w.DB == nil {
+		return
+	}
+	// Defensive: never auto-enqueue from a reproduce/verify/patch run. They
+	// don't currently emit findings (output_kind != "findings") so we
+	// shouldn't be on this path, but a future skill rename could regress it.
+	switch parent.SkillName {
+	case reproduceSkillName, "verify", "patch", "disclose":
+		return
+	}
+	var skill db.Skill
+	err := w.DB.Where("name = ? AND active = ?", reproduceSkillName, true).First(&skill).Error
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			w.Log.Warn("auto-reproduce: skill lookup failed", "err", err)
+		}
+		return
+	}
+	fid := f.ID
+	scan := db.Scan{
+		RepositoryID: parent.RepositoryID,
+		Kind:         JobSkill,
+		Status:       db.ScanQueued,
+		Model:        parent.Model,
+		SkillID:      &skill.ID,
+		FindingID:    &fid,
+		SubPath:      parent.SubPath,
+		APIToken:     newAPIToken(),
+	}
+	if err := w.DB.Create(&scan).Error; err != nil {
+		w.Log.Warn("auto-reproduce: create scan failed", "finding", f.ID, "err", err)
+		return
+	}
+	if err := w.Queue.Enqueue(context.Background(), JobSkill, scan.ID, PrioScan); err != nil {
+		w.Log.Warn("auto-reproduce: enqueue failed", "scan", scan.ID, "err", err)
+		return
+	}
+	w.Log.Info("auto-reproduce queued", "finding", f.ID, "scan", scan.ID, "parent_scan", parent.ID)
+}
+
+// newAPIToken returns a 32-byte hex bearer token. Mirrors web.NewAPIToken;
+// duplicated to avoid pulling the web package into worker (web imports
+// worker, so a back-edge would cycle).
+func newAPIToken() string {
+	var b [32]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // parseMaintainersOutput upserts Maintainer rows and links them to the

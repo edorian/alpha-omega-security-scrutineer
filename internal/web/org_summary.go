@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 
 	"gorm.io/gorm"
 
@@ -36,9 +35,7 @@ func (s *Server) orgSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body := renderOrgSummary(s.DB, repos)
-	filename := fmt.Sprintf("scrutineer-%s-summary-%s.md",
-		sanitiseFilename(owner),
-		time.Now().UTC().Format("20060102"))
+	filename := exportFilename(slugify(owner), "summary")
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	_, _ = w.Write([]byte(body))

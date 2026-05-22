@@ -17,9 +17,112 @@ FROM rust:1.88-alpine@sha256:9dfaae478ecd298b6b5a039e1f2cc4fc040fc818a2de9aa78fa
 RUN apk add --no-cache build-base linux-headers
 RUN cargo install --locked --root /out zizmor@1.24.1
 
+# Composer phar — copy the binary from the official image. Needs PHP at
+# runtime, which we install in the final stage below.
+FROM composer:2.8 AS composer
+
 FROM python:3.13-alpine@sha256:420cd0bf0f3998275875e02ecd5808168cf0843cbb4d3c536432f729247b2acc
-RUN apk add --no-cache git ca-certificates bash nodejs coreutils && \
+RUN apk add --no-cache git ca-certificates bash nodejs coreutils curl && \
     rm -f /usr/local/bin/pip* /usr/local/bin/idle* /usr/local/bin/pydoc*
+
+# C / C++ toolchain plus sanitizer runtimes. Both gcc (build-base) and
+# clang are available; reach for clang whenever a finding needs
+# AddressSanitizer or UndefinedBehaviorSanitizer — Alpine's gcc does not
+# ship libasan/libubsan (musl gap), so `gcc -fsanitize=address` will fail
+# at link time. clang + compiler-rt + lld is the supported sanitizer path.
+# php83-dev brings phpize and php-config so skills that audit PHP C
+# extensions can `phpize && ./configure && make` against the runner's PHP.
+RUN apk add --no-cache \
+        build-base \
+        clang \
+        clang-dev \
+        clang-extra-tools \
+        compiler-rt \
+        llvm \
+        lld \
+        gdb \
+        strace \
+        ltrace \
+        cmake \
+        meson \
+        ninja \
+        autoconf \
+        automake \
+        libtool \
+        pkgconf \
+        bison \
+        flex \
+        re2c \
+        patch \
+        file \
+        binutils \
+        elfutils \
+        linux-headers \
+        musl-dev \
+        php83-dev
+
+# PHP CLI plus a wide set of extensions. Skills that audit or reproduce PHP
+# code (security-deep-dive, semgrep, verify, reproduce, patch) rely on this
+# being present. Err on the side of too many: a missing extension means a
+# reproduction silently no-ops in the runner.
+RUN apk add --no-cache \
+        php83 \
+        php83-bcmath \
+        php83-bz2 \
+        php83-calendar \
+        php83-ctype \
+        php83-curl \
+        php83-dba \
+        php83-dom \
+        php83-exif \
+        php83-fileinfo \
+        php83-ftp \
+        php83-gd \
+        php83-gettext \
+        php83-gmp \
+        php83-iconv \
+        php83-imap \
+        php83-intl \
+        php83-ldap \
+        php83-mbstring \
+        php83-mysqli \
+        php83-mysqlnd \
+        php83-opcache \
+        php83-openssl \
+        php83-pcntl \
+        php83-pdo \
+        php83-pdo_dblib \
+        php83-pdo_mysql \
+        php83-pdo_odbc \
+        php83-pdo_pgsql \
+        php83-pdo_sqlite \
+        php83-pgsql \
+        php83-phar \
+        php83-posix \
+        php83-session \
+        php83-shmop \
+        php83-simplexml \
+        php83-snmp \
+        php83-soap \
+        php83-sockets \
+        php83-sodium \
+        php83-sqlite3 \
+        php83-sysvmsg \
+        php83-sysvsem \
+        php83-sysvshm \
+        php83-tidy \
+        php83-tokenizer \
+        php83-xml \
+        php83-xmlreader \
+        php83-xmlwriter \
+        php83-xsl \
+        php83-zip \
+        php83-pecl-apcu \
+        php83-pecl-imagick \
+        php83-pecl-redis && \
+    ln -s /usr/bin/php83 /usr/local/bin/php && \
+    ln -s /usr/bin/phpize83 /usr/local/bin/phpize && \
+    ln -s /usr/bin/php-config83 /usr/local/bin/php-config
 
 # claude cli
 COPY --from=claude /usr/local/lib/node_modules /usr/local/lib/node_modules
@@ -35,6 +138,9 @@ COPY --from=go-tools /out/* /usr/local/bin/
 
 # zizmor
 COPY --from=zizmor-build /out/bin/zizmor /usr/local/bin/zizmor
+
+# composer (phar; relies on the PHP CLI installed above)
+COPY --from=composer /usr/bin/composer /usr/local/bin/composer
 
 # Non-root
 RUN adduser -D -h /home/runner runner

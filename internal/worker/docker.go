@@ -6,15 +6,29 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
-const DefaultRunnerImage = "ghcr.io/alpha-omega-security/scrutineer-runner:latest"
+// LocalRunnerImage is the docker tag scrutineer uses for the runner
+// image it builds from the local Dockerfile.runner. The tag does NOT
+// exist on any public registry; scrutineer refuses to pull runner
+// images over the network — every container is built from the source
+// tree the binary ships with so the analyst can audit what's running.
+const LocalRunnerImage = "scrutineer-runner:local"
+
+// DefaultRunnerDockerfile is the path scrutineer looks for when it
+// needs to build the runner image. Resolved relative to the working
+// directory (typically the scrutineer source tree).
+const DefaultRunnerDockerfile = "Dockerfile.runner"
 
 // DockerRunner launches claude inside an ephemeral container with the scan
 // workspace (clone + staged skill + output file) mounted at /work. It
@@ -31,7 +45,56 @@ func (d DockerRunner) image() string {
 	if d.Image != "" {
 		return d.Image
 	}
-	return DefaultRunnerImage
+	return LocalRunnerImage
+}
+
+// EnsureLocalRunnerImage builds the runner image from dockerfile when
+// the local tag is missing or out of date relative to the Dockerfile's
+// content. Returns the tag actually present on the host. The tag is
+// suffixed with the Dockerfile's sha256[:12] so a Dockerfile change
+// rolls forward to a new image without the operator remembering to
+// rebuild — `docker build` is a no-op when the layers are cached.
+//
+// Never reaches the network for runner content: the build context is
+// the scrutineer source tree and the FROM lines pin every base image
+// by digest (see Dockerfile.runner). Operators who want a different
+// runner pass --runner-image and bypass this entirely.
+func EnsureLocalRunnerImage(ctx context.Context, dockerfile string, log *slog.Logger) (string, error) {
+	if _, err := os.Stat(dockerfile); err != nil {
+		return "", fmt.Errorf("runner dockerfile %q: %w (cd to the scrutineer source tree, "+
+			"or pass --runner-image <pre-built-tag> to skip the local build)", dockerfile, err)
+	}
+	body, err := os.ReadFile(dockerfile)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", dockerfile, err)
+	}
+	sum := sha256.Sum256(body)
+	tag := "scrutineer-runner:local-" + hex.EncodeToString(sum[:])[:12]
+
+	// Already built? `docker images -q <tag>` prints the image id; empty
+	// output means missing.
+	if out, err := exec.CommandContext(ctx, "docker", "images", "-q", tag).Output(); err == nil &&
+		strings.TrimSpace(string(out)) != "" {
+		log.Info("runner image up to date", "tag", tag)
+		return tag, nil
+	}
+
+	contextDir := filepath.Dir(dockerfile)
+	log.Info("building runner image (this can take ~10 min on first run)",
+		"tag", tag, "dockerfile", dockerfile, "context", contextDir)
+	cmd := exec.CommandContext(ctx, "docker", "build",
+		"--tag", tag,
+		"--tag", LocalRunnerImage,
+		"--file", dockerfile,
+		contextDir,
+	)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("docker build %s: %w", dockerfile, err)
+	}
+	log.Info("runner image built", "tag", tag)
+	return tag, nil
 }
 
 // RunSkill runs a skill inside an ephemeral container. The whole workspace
@@ -87,6 +150,20 @@ func (d DockerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Event
 	} else {
 		dockerArgs = append(dockerArgs, "--network", "none")
 	}
+	// Silence Claude Code's outbound telemetry/metrics/error reporting.
+	// Without these the CLI tries to ship logs to
+	// http-intake.logs.us5.datadoghq.com (OTel-via-Datadog), Statsig,
+	// and Sentry on every scan — all denied by the egress proxy and
+	// noisy in the scrutineer log. Disabling at the source removes the
+	// connect attempts entirely.
+	dockerArgs = append(dockerArgs,
+		"-e", "OTEL_SDK_DISABLED=true",
+		"-e", "DISABLE_TELEMETRY=1",
+		"-e", "DISABLE_ERROR_REPORTING=1",
+		"-e", "DISABLE_BUG_COMMAND=1",
+		"-e", "DISABLE_AUTOUPDATER=1",
+		"-e", "DISABLE_NON_ESSENTIAL_MODEL_CALLS=1",
+	)
 	if os.Getenv("ANTHROPIC_API_KEY") != "" {
 		dockerArgs = append(dockerArgs, "-e", "ANTHROPIC_API_KEY")
 	}

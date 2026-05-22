@@ -30,8 +30,11 @@
 # Disable the docker runner even if docker is available on the host.
 # no_docker: false
 
-# Docker image used for per-scan containers.
-# runner_image: ghcr.io/alpha-omega-security/scrutineer-runner:latest
+# Docker image for per-scan containers. Leave commented and scrutineer
+# builds it locally from ./Dockerfile.runner on startup — scrutineer
+# never pulls runner images from a registry. Only set this if you've
+# pre-built and tagged the image yourself.
+# runner_image: scrutineer-runner:my-tag
 
 # Extra hosts the docker runner's egress proxy will tunnel to, on top of
 # the built-in allowlist (Anthropic API, *.ecosyste.ms, major forges,

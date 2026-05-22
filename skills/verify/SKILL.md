@@ -12,6 +12,8 @@ metadata:
 
 Take an existing finding produced by a prior audit skill and check whether it still holds against the current code. A verify run answers one question: does the reproduction in the finding's validation step still trigger the dangerous behaviour?
 
+If the finding's existing validation field is prose-only or too vague to execute, prefer the `reproduce` skill instead — it builds a clean PoC from scratch. `verify` is for re-running an already-runnable reproduction; `reproduce` is for authoring one.
+
 ## Workspace
 
 - `./src` — the repository at its current HEAD
@@ -32,6 +34,8 @@ Take an existing finding produced by a prior audit skill and check whether it st
    - If the validation is prose-only (no concrete script), try to execute what it describes literally. If you cannot turn the prose into a runnable check, that is `inconclusive` — say why.
    - Prefer running the reproduction against the published artefact (as the original did) over git HEAD, if the validation mentions one.
    - Capture stdout, stderr, exit code. Paste relevant excerpts into `evidence`.
+   - The runner has Python 3, Node 22, Go, Bash, PHP 8.3 (`php`, plus `composer` and the bundled extensions: curl, dom, mbstring, intl, pdo_*, gd, sodium, zip, phar, opcache, apcu, redis, imagick, …), and a full C/C++ toolchain (`gcc`, `clang`, `compiler-rt`, `lld`, `gdb`, `cmake`, `meson`, `ninja`, autotools, `bison`, `flex`, `re2c`). For PHP findings, run the validation as `php -r '...'`, a one-off `.php` script under `/tmp`, or a vendored test (`composer install --no-interaction --no-progress` works offline if `vendor/` exists; if not, the runner has no registry network — treat as `inconclusive` and explain). Prefer running against `./src` directly with `php -d open_basedir=...` only if the original validation specified flags; otherwise plain `php`. For C/C++ findings, build with `clang -fsanitize=address,undefined -g -O1 -fno-omit-frame-pointer -fuse-ld=lld` and reproduce — gcc on Alpine has no `libasan`/`libubsan`, so reach for clang when the validation needs sanitizer evidence. For PHP C extensions, `phpize && ./configure && make` and load the resulting `.so` with `php -d extension=...`; see security-deep-dive for the sanitizer-aware variant.
+   - When the original validation produced an artefact (extracted file, written marker, exfiltrated value), re-run it cleanly: cd to a fresh tmpdir, run, check for the artefact. Quote the path you checked.
 
 5. Decide the status:
    - **confirmed** — the reproduction produces the same dangerous behaviour as the original. The finding is still live.

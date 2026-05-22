@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "reproduce report",
+  "description": "Self-contained PoC produced for an existing finding. The combination of `poc`, `command`, and `transcript` should let an analyst (or a downstream skill) re-run the demonstration without consulting the original prose.",
+  "type": "object",
+  "required": ["outcome", "language", "command", "poc", "transcript", "notes"],
+  "additionalProperties": false,
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": ["reproduced", "not_reproducible", "inconclusive"],
+      "description": "reproduced = PoC ran and the dangerous behaviour fired. not_reproducible = sink is gone or unreachable; cite evidence in notes. inconclusive = environmental reason; explain what would be needed."
+    },
+    "language": {
+      "type": "string",
+      "enum": ["python", "php", "node", "go", "bash", "c", "cpp", "ruby", "perl", "other"],
+      "description": "Interpreter or runtime the PoC uses. Must be available in the runner image; pick the smallest one that triggers the bug. Use 'c' or 'cpp' for native PoCs built with clang/gcc; record the sanitizer flags in `assumptions`."
+    },
+    "command": {
+      "type": "string",
+      "description": "Exact shell command run to execute the PoC, e.g. 'php /tmp/poc.php' or 'python3 /tmp/poc.py'."
+    },
+    "poc": {
+      "type": "string",
+      "description": "Full source of the PoC script, ready to paste into a file. Self-checking: ends with a clear success/failure signal (printed marker or non-zero exit)."
+    },
+    "fixtures": {
+      "type": "array",
+      "description": "Extra files the PoC needs at runtime (crafted archive, malformed YAML, phar payload, etc.). Inline-encoded so the report is self-contained.",
+      "items": {
+        "type": "object",
+        "required": ["path", "encoding", "content"],
+        "additionalProperties": false,
+        "properties": {
+          "path":     { "type": "string", "description": "Relative path the PoC expects, e.g. 'evil.tar'." },
+          "encoding": { "type": "string", "enum": ["base64", "utf-8"] },
+          "content":  { "type": "string" }
+        }
+      }
+    },
+    "transcript": {
+      "type": "string",
+      "description": "Combined stdout/stderr from running the PoC, truncated to roughly 4000 chars per stream. The reader should be able to verify the dangerous behaviour from this alone."
+    },
+    "exit_code": {
+      "type": "integer",
+      "description": "Process exit code from running the PoC."
+    },
+    "assumptions": {
+      "type": "string",
+      "description": "Preconditions the PoC requires (PHP extension, environment variable, vendored package, etc.). Should match what the runner image provides; otherwise outcome should be inconclusive."
+    },
+    "cleanup": {
+      "type": "string",
+      "description": "Optional shell snippet to undo any side effects the PoC produced (markers, temp files). The runner is ephemeral so this is informational, not strictly required."
+    },
+    "patched_validation": {
+      "type": "boolean",
+      "description": "True if this skill PATCHed the finding's `validation` field with the rebuilt PoC. Only set when outcome=reproduced and the original validation prose was thin."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Short prose: what made the PoC succeed/fail, what the analyst should know, anything non-obvious."
+    }
+  }
+}

@@ -26,9 +26,7 @@ func (s *Server) repoReport(w http.ResponseWriter, r *http.Request) {
 
 	body := renderRepoReport(s.DB, &repo)
 
-	filename := fmt.Sprintf("scrutineer-%s-%s.md",
-		sanitiseFilename(repo.Name),
-		time.Now().UTC().Format("20060102"))
+	filename := exportFilename(slugify(firstNonEmpty(repo.Name, repo.FullName)), "report")
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	_, _ = w.Write([]byte(body))
@@ -472,21 +470,3 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-func sanitiseFilename(s string) string {
-	// Conservative: keep letters, digits, -_. — everything else becomes -.
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
-			r == '-', r == '_', r == '.':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('-')
-		}
-	}
-	out := b.String()
-	if out == "" {
-		return "repo"
-	}
-	return out
-}

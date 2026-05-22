@@ -5,8 +5,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"time"
@@ -98,9 +100,29 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
+	// Use a Decoder rather than yaml.Unmarshal so we can detect when the
+	// file contains data the parser silently dropped. The common failure
+	// mode is uncommenting `# runner_image: …` and leaving the leading
+	// space behind: yaml.v3 treats the indented line as a single-key
+	// document, then fails to find the next document-start marker on the
+	// next column-0 key. yaml.Unmarshal only reads the first document and
+	// returns nil, so `models:` and `default_model:` below would vanish
+	// without a peep — and every scan would silently use the built-in
+	// default model.
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
 	var c Config
-	if err := yaml.Unmarshal(b, &c); err != nil {
+	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	var trailing yaml.Node
+	if err := dec.Decode(&trailing); err == nil {
+		return nil, fmt.Errorf("parse config %s: more than one YAML document; "+
+			"check for stray leading whitespace on a top-level key (e.g. uncommented `# foo:` "+
+			"left a space behind)", path)
+	} else if !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parse config %s: trailing content failed to parse "+
+			"(usually a leading-space indent on a top-level key after an uncommented `# foo:`): %w", path, err)
 	}
 	if err := ValidateClone(c.Clone); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)

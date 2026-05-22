@@ -25,7 +25,7 @@ Propose a minimal code patch that fixes a confirmed finding. You are not shippin
 
 2. Fetch the finding: `GET {api_base}/findings/{finding_id}` with `Authorization: Bearer {token}`. Read `location`, `cwe`, `trace`, `boundary`, `validation`, `rating`. These five together tell you where the sink is, what the vulnerable input flow looks like, and what dangerous behaviour you need to stop.
 
-3. Inside `./src`, edit files to fix the finding. Constraints:
+3. Inside `./src`, edit files to fix the finding. The runner has Python 3.13, Node 22, Go, Bash, PHP 8.3 (`php`, `composer`, plus most bundled extensions: curl, dom, mbstring, intl, pdo_*, gd, sodium, zip, phar, opcache, apcu, …), and a full C/C++ toolchain (`gcc`, `clang`, sanitizers via `compiler-rt`, `gdb`, `cmake`, `meson`, autotools, `phpize`/`php-config` for PHP C extensions). You can lint a PHP fix with `php -l`, rebuild a C extension with `phpize && ./configure && make`, re-run a sanitizer build with `clang -fsanitize=address,undefined`, run a Python regression test, etc., without leaving the container. Constraints:
 
    - **Minimal.** Change only what the fix requires. Do not refactor surrounding code, rename variables, reformat unrelated lines, or upgrade dependencies unless the fix inherently requires it.
    - **In place.** Fix the sink where it lives. If the finding's `location` is `pkg/foo/bar.go:42`, that is where the patch should land (or at the nearest layer where a guard is sensible — e.g. the input validator that feeds the sink).

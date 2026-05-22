@@ -30,3 +30,7 @@ python3 scripts/scan.py > ./report.json
 ```
 
 The script self-reports tool-missing errors into the JSON envelope so failures are visible on the scan page rather than silent. Don't post-process its output.
+
+## Languages
+
+`p/security-audit` ships rules for PHP, Python, JavaScript/TypeScript, Java, Go, Ruby, C/C++, Kotlin, Scala, and others; semgrep auto-detects the language per file and applies the matching subset. PHP-specific rule families include `php.lang.security.*` (eval / unserialize / preg_replace `/e` / `assert`), `php.laravel.*`, `php.symfony.*`, `php.wordpress.*`. C/C++ rule families include `c.lang.security.*` (insecure-use-strcpy, insecure-use-gets, format-string-injection, raw-tcp-socket), `cpp.lang.security.*`. You do not need to pass `--lang`; for a PHP repo the runner picks up `*.php`, `*.phtml`, `*.module`, `*.inc` automatically; for C/C++ it picks up `*.c`, `*.h`, `*.cc`, `*.cpp`, `*.cxx`, `*.hpp`. The runner image has PHP 8.3 + composer, gcc 15 + clang 21 + sanitizer runtimes, and the autotools/CMake/meson stack — so semgrep's autofix stage and any rules that shell out to a compiler for type lookups will work.

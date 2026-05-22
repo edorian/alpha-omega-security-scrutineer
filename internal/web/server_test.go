@@ -1156,6 +1156,74 @@ func TestFindingPatchDownload(t *testing.T) {
 	}
 }
 
+func TestFindingShowReproduceSection(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/foo/bar", Name: "bar"}
+	s.DB.Create(&repo)
+	parent := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "security-deep-dive"}
+	s.DB.Create(&parent)
+	finding := db.Finding{ScanID: parent.ID, RepositoryID: repo.ID, FindingID: "F1", Title: "x", Severity: "High", Status: db.FindingTriaged}
+	s.DB.Create(&finding)
+
+	// First request: no reproduce scan -> absence message.
+	req := httptest.NewRequest("GET", "/findings/1", nil)
+	req.Host = testHost
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Reproduction") {
+		t.Error("missing Reproduction section header")
+	}
+	if !strings.Contains(body, "No <code>reproduce</code> scan has completed") {
+		t.Error("missing absence message when no reproduce scan exists")
+	}
+
+	// Add a completed reproduce scan with a parseable report.
+	fid := finding.ID
+	finished := time.Now()
+	report := `{
+		"outcome": "reproduced",
+		"language": "python",
+		"command": "python3 /tmp/poc.py",
+		"poc": "import sys\nopen('/tmp/pwned','w').write('x')\nprint('PoC OK: wrote /tmp/pwned')\n",
+		"transcript": "$ python3 /tmp/poc.py\nPoC OK: wrote /tmp/pwned\n",
+		"exit_code": 0,
+		"assumptions": "Python 3.13 (image default).",
+		"notes": "Path traversal reproduces against HEAD."
+	}`
+	reproScan := db.Scan{
+		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone,
+		SkillName:  "reproduce",
+		FindingID:  &fid,
+		FinishedAt: &finished,
+		Report:     report,
+	}
+	s.DB.Create(&reproScan)
+
+	req = httptest.NewRequest("GET", "/findings/1", nil)
+	req.Host = testHost
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	body = w.Body.String()
+	for _, want := range []string{
+		"Reproduction",
+		"reproduced",
+		"python3 /tmp/poc.py",
+		"PoC OK: wrote /tmp/pwned",
+		"Path traversal reproduces against HEAD.",
+		"Python 3.13 (image default).",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in finding page", want)
+		}
+	}
+}
+
 func TestFindingPatchDownload_404WhenNoPatch(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
