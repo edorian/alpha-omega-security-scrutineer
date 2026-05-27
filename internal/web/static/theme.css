@@ -401,8 +401,7 @@ pre.log { background: var(--muted); padding: 1rem; border-radius: var(--radius);
 
 /* ── code browser ── */
 #blob { display: block; padding: 0.5rem 0; tab-size: 4; }
-.hl-line { display: block; padding-left: 3.5rem; position: relative;
-           min-height: 1.25rem; }
+.hl-line { padding-left: 3.5rem; position: relative; }
 .hl-num { position: absolute; left: 0; width: 3rem; text-align: right;
           padding-right: 0.75rem; color: var(--muted-foreground);
           user-select: none; font-size: 0.7rem; }
