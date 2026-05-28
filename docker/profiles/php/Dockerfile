@@ -10,20 +10,26 @@
 ARG RUNNER_IMAGE=ghcr.io/alpha-omega-security/scrutineer-runner:latest
 FROM ${RUNNER_IMAGE}
 
+ARG PHP_VERSION=8.4.21-3+0~20260514.49+debian12~1.gbp45ccaf
+
 USER root
-RUN apk add --no-cache \
-        php84=8.4.21-r0 \
-        php84-phar=8.4.21-r0 \
-        php84-openssl=8.4.21-r0 \
-        php84-mbstring=8.4.21-r0 \
-        php84-tokenizer=8.4.21-r0 \
-        php84-curl=8.4.21-r0 \
-        php84-dom=8.4.21-r0 \
-        php84-simplexml=8.4.21-r0 \
-        php84-xml=8.4.21-r0 \
-        php84-xmlwriter=8.4.21-r0 \
-        php84-fileinfo=8.4.21-r0 \
-        php84-iconv=8.4.21-r0 \
-    && ln -sf /usr/bin/php84 /usr/local/bin/php
+# sury packages PHP 8.4 for bookworm; signed-by keyring, no apt-key.
+# Extension parity with the prior Alpine pin (phar, openssl, tokenizer,
+# fileinfo, iconv, dom, simplexml, xml, xmlwriter): php8.4-cli covers
+# phar/openssl/tokenizer/fileinfo/iconv as builtins; php8.4-xml covers
+# dom/simplexml/xml/xmlwriter; mbstring and curl are their own packages.
+RUN install -d -m 0755 /etc/apt/keyrings \
+ && curl -fsSL https://packages.sury.org/php/apt.gpg \
+        -o /etc/apt/keyrings/sury-php.gpg \
+ && chmod go+r /etc/apt/keyrings/sury-php.gpg \
+ && echo "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ bookworm main" \
+        > /etc/apt/sources.list.d/sury-php.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+        php8.4-cli=${PHP_VERSION} \
+        php8.4-mbstring=${PHP_VERSION} \
+        php8.4-curl=${PHP_VERSION} \
+        php8.4-xml=${PHP_VERSION} \
+ && rm -rf /var/lib/apt/lists/*
 
 USER runner
