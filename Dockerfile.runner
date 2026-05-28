@@ -31,10 +31,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # semgrep in a venv so PEP 668 doesn't require --break-system-packages.
+# Smoke-test required CLIs at build time so missing packages or broken venv
+# symlinks fail the image build instead of later scan jobs.
 RUN python3 -m venv /opt/semgrep && \
     /opt/semgrep/bin/pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" "setuptools<81" && \
     ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep && \
-    ln -s /opt/semgrep/bin/pysemgrep /usr/local/bin/pysemgrep
+    ln -s /opt/semgrep/bin/pysemgrep /usr/local/bin/pysemgrep && \
+    python3 --version && \
+    gh --version && \
+    semgrep --version && \
+    pysemgrep --version
 
 # Glibc tarball; shas computed locally — upstream SHASUMS256.txt is musl-only.
 ARG TARGETARCH
