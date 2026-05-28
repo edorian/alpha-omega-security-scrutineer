@@ -118,9 +118,15 @@ No rate limiting on `POST /repositories`, no cap on clone size, no timeout on th
 
 ### T11: Image supply chain (partially mitigated)
 
-Tool versions are pinned: `claude-code@2.1.119`, `semgrep==1.116.0`, `git-pkgs@v0.15.3`, `brief@v0.6.0`, `zizmor@1.24.1`. Base images are pinned by sha256 digest. The container runs as non-root user `scrutineer`. `curl`, `npm`, and `pip` are stripped from the final stage. The runner image is built in CI, smoke-tested, and published to GHCR; users pull a known-good artifact rather than rebuilding against live registries.
+Tool versions are pinned: `claude-code@2.1.123`, `semgrep==1.116.0`, `git-pkgs@v0.15.3`, `brief@v0.6.0`, `zizmor@1.24.1`. The final stage is `debian:bookworm-slim`; the `golang:1.26-bookworm` and `rust:1.88-bookworm` builder stages are pinned by sha256 digest. The container runs as non-root user `runner`. The runner image is built in CI, smoke-tested, and published to GHCR; users pull a known-good artifact rather than rebuilding against live registries.
 
-Residual: tool installs are pinned by version tag, not by content hash. A compromised release republished at the same version (e.g. a yanked-and-republished npm package) would still land. Hash-pinned lockfiles for pip/npm are tracked in #56.
+Supply-chain surface in the final stage:
+- `apt` pulls from Debian's official mirrors plus the GitHub CLI repo at `cli.github.com/packages` (signed-by keyring under `/etc/apt/keyrings/`). `gh` is used at scan time by the `fork` and `report-upstream` skills.
+- `claude` is the glibc tarball from `github.com/anthropics/claude-code` releases, SHA256-pinned per architecture. The hashes are computed locally and reviewed on version bumps because the un-suffixed assets are not in upstream `SHASUMS256.txt`.
+- `semgrep` is installed via `pip` into a venv at `/opt/semgrep` (PEP 668 dodge without `--break-system-packages`). `pip` is therefore present, scoped to that venv.
+- `curl` remains on PATH; used at build time to fetch the claude tarball and apt keyrings, and at scan time inside the egress-proxied container. `npm` is not installed.
+
+Residual: `apt` and `pip` installs are pinned by version, not by content hash. A compromised release republished at the same version on Debian, sury, or PyPI would still land. Hash-pinned lockfiles for `pip` are tracked in #56.
 
 ### T12: Docker socket exposure in per-job runner (design risk, critical if adopted)
 
@@ -169,8 +175,8 @@ GORM usage is consistently parameterised; no `Raw`, no string-built `Where`, and
 - [x] `0700` on the data directory at startup (T8).
 - [x] `toolchain go1.26.2` in go.mod so host builds match the image (T10).
 - [x] Pin tool versions in Dockerfile: claude-code, semgrep, git-pkgs, brief, zizmor (T11).
-- [x] Non-root `USER scrutineer` in Dockerfile (T11).
-- [x] Strip `curl`, `npm`, `pip` from final Docker stage (T11).
+- [x] Non-root `USER runner` in Dockerfile (T11).
+- [x] Trim final Docker stage: `npm` absent, `pip` scoped to the `/opt/semgrep` venv, `curl` retained for build- and scan-time fetches (T11).
 - [ ] Per-job ephemeral runner (T1). See T12 before reaching for the Docker socket.
 - [ ] URL allowlist at enqueue time; block RFC1918 redirects in HTTP client (T4).
 - [ ] Finding provenance tagging: source job on each finding row (T5).
