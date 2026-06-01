@@ -88,6 +88,88 @@ func (w *Worker) workRoot(scanID uint) string {
 	return filepath.Join(w.DataDir, fmt.Sprintf("scan-%d", scanID))
 }
 
+// workspaceScanID returns the scan id whose workspace path a run should
+// use. A fresh scan uses its own id; a retry that resumes a session reuses
+// the lineage-root id so claude executes in the same working directory the
+// original run did — claude keys its resumable session store by cwd, so a
+// different path means --resume can't find the conversation.
+func workspaceScanID(scan *db.Scan) uint {
+	if scan.ResumedFromScanID != nil && *scan.ResumedFromScanID != 0 {
+		return *scan.ResumedFromScanID
+	}
+	return scan.ID
+}
+
+// scanWorkRoot is workRoot resolved through the resume lineage.
+func (w *Worker) scanWorkRoot(scan *db.Scan) string {
+	return w.workRoot(workspaceScanID(scan))
+}
+
+// claudeConfigDir is the host directory holding the claude session store
+// for this scan's lineage. The docker runner mounts it as CLAUDE_CONFIG_DIR
+// so the conversation survives a container exit; it lives outside the
+// per-scan workspace (which is deleted when the scan finishes) and is keyed
+// by the lineage root so a retry finds the original run's session. The
+// local runner ignores it and uses the host's own ~/.claude.
+func (w *Worker) claudeConfigDir(scan *db.Scan) string {
+	return filepath.Join(w.DataDir, "claude-config", fmt.Sprintf("scan-%d", workspaceScanID(scan)))
+}
+
+// applyResume fills a SkillJob's session-resume inputs from the scan: the
+// claude session id to --resume (set on a retry that carries one forward
+// from a failed run) and the persistent config dir the docker runner mounts
+// so the session store survives a container exit. A fresh scan has an empty
+// SessionID, so the runner just starts a new conversation.
+func (w *Worker) applyResume(scan *db.Scan, sj *SkillJob, emit func(Event)) {
+	sj.ClaudeConfigDir = w.claudeConfigDir(scan)
+	if scan.SessionID != "" {
+		sj.ResumeSessionID = scan.SessionID
+		emit(Event{Kind: KindText, Text: "resuming claude session " + scan.SessionID})
+	}
+}
+
+// scanEmitter returns the emit callback handed to a job handler. It appends
+// each event to the scan log (persisting incrementally so the UI streams it)
+// and snapshots result-event token usage. Session events are special: they
+// carry no log line and instead persist the claude session id the moment it
+// appears so a crash mid-run leaves the scan resumable. The in-memory struct
+// is kept in sync too — wrap's final Save(&scan) writes every column and
+// would otherwise clobber a column-only update with a stale value.
+func (w *Worker) scanEmitter(scan *db.Scan) func(Event) {
+	return func(e Event) {
+		if e.Kind == KindSession {
+			if e.SessionID != "" && e.SessionID != scan.SessionID {
+				scan.SessionID = e.SessionID
+				w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Update("session_id", e.SessionID)
+			}
+			return
+		}
+		line := FormatEvent(e)
+		scan.Log += line + "\n"
+		w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Update("log", scan.Log)
+		if e.Kind == KindResult {
+			scan.CostUSD = e.CostUSD
+			scan.Turns = e.Turns
+			scan.InputTokens = e.Usage.InputTokens
+			scan.OutputTokens = e.Usage.OutputTokens
+			scan.CacheReadTokens = e.Usage.CacheReadTokens
+			scan.CacheWriteTokens = e.Usage.CacheWriteTokens
+		}
+		w.publish(scan.ID, scan.RepositoryID, "scan-log", line+"\n")
+	}
+}
+
+// clearSessionStore wipes a finished scan's resume state so its next
+// deliberate re-run starts fresh: it drops the session id and tears down the
+// persisted claude session store. Only called on "done" — a failed scan
+// keeps both so a UI retry can --resume instead of restarting from turn 0.
+func (w *Worker) clearSessionStore(scan *db.Scan) {
+	scan.SessionID = ""
+	if rmErr := os.RemoveAll(w.claudeConfigDir(scan)); rmErr != nil {
+		w.Log.Warn("session store cleanup failed", "scan", scan.ID, "err", rmErr)
+	}
+}
+
 func (w *Worker) Register(q *queue.Queue) {
 	q.Register(JobSkill, w.wrap(w.doSkill))
 	q.Register(JobExposure, w.wrap(w.doExposure))
@@ -144,20 +226,7 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 			return err
 		}
 
-		emit := func(e Event) {
-			line := FormatEvent(e)
-			scan.Log += line + "\n"
-			w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Update("log", scan.Log)
-			if e.Kind == KindResult {
-				scan.CostUSD = e.CostUSD
-				scan.Turns = e.Turns
-				scan.InputTokens = e.Usage.InputTokens
-				scan.OutputTokens = e.Usage.OutputTokens
-				scan.CacheReadTokens = e.Usage.CacheReadTokens
-				scan.CacheWriteTokens = e.Usage.CacheWriteTokens
-			}
-			w.publish(scan.ID, scan.RepositoryID, "scan-log", line+"\n")
-		}
+		emit := w.scanEmitter(&scan)
 
 		report, err := h(ctx, &scan, emit)
 
@@ -194,12 +263,15 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 			scan.Status = db.ScanDone
 			scan.Report = report
 		}
+		if scan.Status == db.ScanDone {
+			w.clearSessionStore(&scan)
+		}
 		scan.StatusPriority = db.StatusPriorityFor(scan.Status)
 		if saveErr := w.DB.Save(&scan).Error; saveErr != nil {
 			return saveErr
 		}
 		if scan.Status.Terminal() {
-			if rmErr := os.RemoveAll(w.workRoot(scan.ID)); rmErr != nil {
+			if rmErr := os.RemoveAll(w.scanWorkRoot(&scan)); rmErr != nil {
 				w.Log.Warn("workspace cleanup failed", "scan", scan.ID, "err", rmErr)
 			}
 		}
