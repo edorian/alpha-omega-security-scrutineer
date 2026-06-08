@@ -146,7 +146,14 @@
     </div>
 
     {{if .Subprojects}}
-      <h3 class="font-medium mb-2">Subprojects <span class="text-muted-foreground text-xs">({{len .Subprojects}})</span></h3>
+      <div class="flex items-center justify-between gap-2 mb-2">
+        <h3 class="font-medium">Subprojects <span class="text-muted-foreground text-xs">({{len .Subprojects}})</span></h3>
+        <form method="post" action="/repositories/{{.Repo.ID}}/scan-all"
+              hx-post="/repositories/{{.Repo.ID}}/scan-all" hx-swap="none"
+              hx-confirm="Enqueue a deep-dive scan for all {{len .Subprojects}} subproject(s)?">
+          <button type="submit" class="btn-sm-outline"><i data-lucide="play"></i> Scan all</button>
+        </form>
+      </div>
       <p class="text-sm text-muted-foreground mb-2">Detected scannable units inside this repository. Each can be scanned independently with its own findings stream.</p>
       <table class="table w-full mb-6">
         <thead><tr>

@@ -38,6 +38,29 @@ func getRepoPage(t *testing.T, s *Server, id uint) string {
 	return w.Body.String()
 }
 
+func TestRepoShow_scanAllButton(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	repo := db.Repository{URL: "https://example.com/r", Name: "r"}
+	s.DB.Create(&repo)
+
+	// No subprojects: the Subprojects section (and its Scan all button) is hidden.
+	body := getRepoPage(t, s, repo.ID)
+	if strings.Contains(body, "/scan-all") {
+		t.Error("repo with no subprojects should not render the Scan all button")
+	}
+
+	// With subprojects, the bulk button posts to the repo-scoped scan-all route.
+	s.DB.Create(&db.Subproject{RepositoryID: repo.ID, Path: "pkg/a", Name: "a"})
+	body = getRepoPage(t, s, repo.ID)
+	if !strings.Contains(body, fmt.Sprintf("/repositories/%d/scan-all", repo.ID)) {
+		t.Errorf("Scan all button should post to the repo-scoped scan-all route; body=%s", body)
+	}
+	if !strings.Contains(body, "Scan all") {
+		t.Error("Subprojects section should render a Scan all button label")
+	}
+}
+
 func TestRepoShow_threatModelTab_deepDiveOnly(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()

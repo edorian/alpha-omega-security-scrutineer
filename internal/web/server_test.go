@@ -2041,6 +2041,70 @@ func TestRepoVerifyAll_skillNotInstalled(t *testing.T) {
 	}
 }
 
+func TestRepoScanAll(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/foo/bar", Name: "bar"}
+	s.DB.Create(&repo)
+	deepDive := db.Skill{Name: deepDiveSkillName, Body: "b", OutputFile: "r.json",
+		OutputKind: "freeform", Version: 1, Active: true, Source: "ui"}
+	s.DB.Create(&deepDive)
+
+	// Three subprojects; one of them already has an in-flight deep-dive scan
+	// and must be skipped so the button is idempotent.
+	for _, p := range []string{"a", "b", "skipme"} {
+		s.DB.Create(&db.Subproject{RepositoryID: repo.ID, Path: p, Name: p})
+	}
+	s.DB.Create(&db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanRunning,
+		SkillName: deepDiveSkillName, SkillID: new(deepDive.ID), SubPath: "skipme"})
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/repositories/%d/scan-all", repo.ID), nil)
+	req.Host = testHost
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	// One queued deep-dive scan per subproject without an in-flight scan.
+	var queued []db.Scan
+	s.DB.Where("skill_name = ? AND status = ?", deepDiveSkillName, db.ScanQueued).Find(&queued)
+	if len(queued) != 2 {
+		t.Fatalf("queued scans = %d, want 2", len(queued))
+	}
+	paths := map[string]bool{}
+	for _, sc := range queued {
+		paths[sc.SubPath] = true
+	}
+	if !paths["a"] || !paths["b"] || paths["skipme"] {
+		t.Errorf("queued sub_paths = %v, want {a, b} only", paths)
+	}
+	if f := flashFrom(t, w); !strings.Contains(f.Title, "2 queued") || !strings.Contains(f.Title, "1 already running") {
+		t.Errorf("flash = %q, want 2 queued / 1 already running", f.Title)
+	}
+}
+
+func TestRepoScanAll_skillNotInstalled(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/foo/bar", Name: "bar"}
+	s.DB.Create(&repo)
+	s.DB.Create(&db.Subproject{RepositoryID: repo.ID, Path: "a", Name: "a"})
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/repositories/%d/scan-all", repo.ID), nil)
+	req.Host = testHost
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+
+	var n int64
+	s.DB.Model(&db.Scan{}).Count(&n)
+	if n != 0 {
+		t.Errorf("scans created = %d, want 0 when skill missing", n)
+	}
+	if f := flashFrom(t, w); f.Category != "error" {
+		t.Errorf("flash category = %q, want error", f.Category)
+	}
+}
+
 func TestFindingPatchDownload(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()

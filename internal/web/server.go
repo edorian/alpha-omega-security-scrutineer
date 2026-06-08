@@ -246,6 +246,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /repositories/{id}/blob/{commit}/{path...}", s.repoBlob)
 	mux.HandleFunc("GET /repositories/{id}/report.md", s.repoReport)
 	mux.HandleFunc("POST /repositories/{id}/scan", s.repoScan)
+	mux.HandleFunc("POST /repositories/{id}/scan-all", s.repoScanAll)
 	mux.HandleFunc("POST /repositories/{id}/delete", s.repoDelete)
 	mux.HandleFunc("POST /repositories/{id}/disclosure-channel", s.repoDisclosureChannel)
 	mux.HandleFunc("GET /scans", s.jobs)
@@ -1635,6 +1636,73 @@ func (s *Server) repoScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.redirect(w, r, fmt.Sprintf("/repositories/%d", repo.ID))
+}
+
+// repoScanAll is the bulk equivalent of the per-subproject "Scan" button: it
+// enqueues the deep-dive skill for every detected subproject on the repo, so
+// the operator doesn't have to click through the list one row at a time.
+// Subprojects that already have a queued or running deep-dive scan are skipped,
+// so re-clicking the button doesn't pile up duplicate jobs.
+func (s *Server) repoScanAll(w http.ResponseWriter, r *http.Request) {
+	repo, ok := loadByID[db.Repository](s, w, r)
+	if !ok {
+		return
+	}
+	var skill db.Skill
+	if err := s.DB.Where("name = ? AND active = ?", deepDiveSkillName, true).First(&skill).Error; err != nil {
+		setFlash(w, Flash{Category: errorKey, Title: deepDiveSkillName + " skill is not installed"})
+		s.redirect(w, r, fmt.Sprintf("/repositories/%d", repo.ID))
+		return
+	}
+
+	var subprojects []db.Subproject
+	s.DB.Where("repository_id = ?", repo.ID).Order("path").Find(&subprojects)
+
+	model := r.FormValue("model")
+	var queued, skipped, errored int
+	for _, sub := range subprojects {
+		var inflight int64
+		s.DB.Model(&db.Scan{}).
+			Where("repository_id = ? AND sub_path = ? AND skill_id = ? AND status IN ?",
+				repo.ID, sub.Path, skill.ID, []db.ScanStatus{db.ScanQueued, db.ScanRunning}).
+			Count(&inflight)
+		if inflight > 0 {
+			skipped++
+			continue
+		}
+		if _, err := s.enqueueSkillWith(r.Context(), repo.ID, skill.ID, ScanOpts{
+			Model:   model,
+			SubPath: sub.Path,
+		}); err != nil {
+			errored++
+			continue
+		}
+		queued++
+	}
+	setFlash(w, scanAllToast(queued, skipped, errored))
+	// Land on the Scans tab so the operator can watch the jobs run.
+	s.redirect(w, r, fmt.Sprintf("/repositories/%d#rt3", repo.ID))
+}
+
+func scanAllToast(queued, skipped, errored int) Flash {
+	if queued == 0 && skipped == 0 && errored == 0 {
+		return Flash{Category: successKey, Title: "No subprojects to scan"}
+	}
+	parts := []string{fmt.Sprintf("%d queued", queued)}
+	if skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d already running", skipped))
+	}
+	if errored > 0 {
+		parts = append(parts, fmt.Sprintf("%d errored", errored))
+	}
+	cat := successKey
+	switch {
+	case errored > 0:
+		cat = errorKey
+	case queued == 0:
+		cat = warningKey
+	}
+	return Flash{Category: cat, Title: "Scan all: " + strings.Join(parts, ", ")}
 }
 
 // repoDelete removes a repository and every row that hangs off it, then
