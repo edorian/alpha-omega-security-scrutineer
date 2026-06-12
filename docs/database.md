@@ -155,6 +155,7 @@ One row per vulnerability. Lifecycle columns are mutated through `db.WriteFindin
 | exploited_in_wild_evidence | text | Free-text source note: researcher, ticket link, traffic observation. |
 | mitigation | text | Markdown body from the `mitigate` skill: workarounds consumers can apply before the fix ships, plus detection guidance. |
 | mitigation_semgrep | text | Optional YAML semgrep rule from the same skill that flags the vulnerable pattern. Empty when no rule was warranted. |
+| last_revalidate_verdict | text | Cached latest verdict from the `revalidate` skill (`true_positive`, `false_positive`, `already_fixed`, `uncertain`). Indexed so the audit queue can filter without scanning `finding_notes`. Empty when revalidate has not run on this finding. |
 | trace | text | Step 1 prose. Markdown. |
 | boundary | text | Step 2. |
 | validation | text | Step 3: reproduction. |
@@ -187,6 +188,23 @@ Timestamped internal notes on a finding. Replaced the old `findings.notes` colum
 | finding_id | integer FK | Cascade delete. |
 | body | text | |
 | by | text | Free-text author. |
+| created_at | datetime | |
+
+## finding_reviews
+
+Structured human verdicts on a finding, mirroring the revalidate skill's
+enum so reviewer agreement with the model is computable. Populated by the
+`/audit` page and `POST /findings/{id}/reviews`. The audit queue excludes
+findings that already have a row here.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | integer PK | |
+| finding_id | integer FK | Cascade delete. |
+| verdict | text | `true_positive`, `false_positive`, `already_fixed`, `uncertain`. |
+| reason | text | Free-text justification. |
+| automated_outcome | text | Snapshot of the automation verdict (typically the latest revalidate verdict) at review time. Empty when no automation has spoken. |
+| reviewer | text | Optional free-text reviewer identity. |
 | created_at | datetime | |
 
 ## finding_communications
