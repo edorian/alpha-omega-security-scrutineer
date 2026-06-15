@@ -121,19 +121,33 @@ func (s *Server) apiListDependencies(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusForbidden, "scan may only read its own repository")
 		return
 	}
+	type dependencyResponse struct {
+		ID                    uint   `json:"id"`
+		Name                  string `json:"name"`
+		Ecosystem             string `json:"ecosystem"`
+		PURL                  string `json:"purl"`
+		Requirement           string `json:"requirement"`
+		RequirementUnresolved bool   `json:"requirement_unresolved"`
+		RequirementResolution string `json:"requirement_resolution"`
+		DependencyType        string `json:"dependency_type"`
+		ManifestPath          string `json:"manifest_path"`
+		ManifestKind          string `json:"manifest_kind"`
+	}
 	var rows []db.Dependency
 	s.DB.Where("repository_id = ?", id).Order("ecosystem, name").Find(&rows)
-	out := make([]map[string]any, 0, len(rows))
+	out := make([]dependencyResponse, 0, len(rows))
 	for _, d := range rows {
-		out = append(out, map[string]any{
-			"id":              d.ID,
-			"name":            d.Name,
-			"ecosystem":       d.Ecosystem,
-			"purl":            d.PURL,
-			"requirement":     d.Requirement,
-			"dependency_type": d.DependencyType,
-			"manifest_path":   d.ManifestPath,
-			"manifest_kind":   d.ManifestKind,
+		out = append(out, dependencyResponse{
+			ID:                    d.ID,
+			Name:                  d.Name,
+			Ecosystem:             d.Ecosystem,
+			PURL:                  d.PURL,
+			Requirement:           d.Requirement,
+			RequirementUnresolved: d.RequirementUnresolved,
+			RequirementResolution: d.RequirementResolution,
+			DependencyType:        d.DependencyType,
+			ManifestPath:          d.ManifestPath,
+			ManifestKind:          d.ManifestKind,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
