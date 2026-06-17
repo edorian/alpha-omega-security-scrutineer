@@ -153,7 +153,7 @@
         "reach_exposed": { "type": "integer", "minimum": 0 },
         "trace":      { "$ref": "#/$defs/markdown" },
         "boundary":   { "$ref": "#/$defs/markdown" },
-        "validation": { "$ref": "#/$defs/markdown" },
+        "validation": { "$ref": "#/$defs/markdown", "description": "The reproduction: the script or commands you ran, verbatim and in full, followed by their output. The script content is mandatory, not a description of it — output alone, without the thing that produced it, cannot be re-run or acted on by a later verify pass." },
         "prior_art":  { "$ref": "#/$defs/markdown" },
         "reach":      { "$ref": "#/$defs/markdown" },
         "rating":     { "$ref": "#/$defs/markdown" }

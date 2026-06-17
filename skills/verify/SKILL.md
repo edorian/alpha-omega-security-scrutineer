@@ -32,7 +32,8 @@ Take an existing finding produced by a prior audit skill and check whether it st
    - Only run what the validation field describes. Do not improvise a new attack vector.
    - If the validation is prose-only (no concrete script), try to execute what it describes literally. If you cannot turn the prose into a runnable check, that is `inconclusive` — say why.
    - If the validation installs the package from a registry (`gem install foo`, `pip install foo`), build and install from `./src` instead so you are testing HEAD, not the last release. If the package cannot be built locally, status is `inconclusive` with the build error in `notes`.
-   - Capture stdout, stderr, exit code. Paste relevant excerpts into `evidence`.
+   - Record the exact reproduction you ran into `reproducer`, verbatim: the full script contents, command line, or crafted input — not a description of it. If you wrote a file to disk, paste its contents; if you ran shell commands, paste them. A report whose `evidence` shows output but whose `reproducer` only says "ran the repro" is useless: the analyst cannot tell what was executed or re-run it.
+   - Capture the result of running it — stdout, stderr, exit code — into `evidence`. Paste relevant excerpts.
 
 5. Decide the status:
    - **confirmed** — the reproduction produces the same dangerous behaviour as the original. The finding is still live.
@@ -51,14 +52,17 @@ Write `./report.json`:
 ```json
 {
   "status": "confirmed" | "fixed" | "inconclusive",
+  "reproducer": "...",
   "evidence": "...",
   "notes": "..."
 }
 ```
+
+`reproducer` is the verbatim script/commands/input you ran; `evidence` is the output they produced. Both belong in the report — the output alone, without the thing that generated it, cannot be acted on.
 
 Scrutineer updates the finding's lifecycle status based on your answer:
 - `confirmed` moves a `new` finding to `enriched`
 - `fixed` moves any finding to `fixed`
 - `inconclusive` leaves the status alone
 
-Evidence and notes are appended to the finding's Notes field with a timestamp header so the analyst can read your trail later.
+The reproducer, evidence, and notes are appended to the finding's Notes field with a timestamp header so the analyst can read your trail later — and re-run the reproducer.

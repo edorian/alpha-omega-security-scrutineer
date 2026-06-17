@@ -10,9 +10,13 @@
       "enum": ["confirmed", "fixed", "inconclusive"],
       "description": "confirmed = the finding still reproduces. fixed = the original reproduction no longer triggers (upstream fix applied between original scan and this run). inconclusive = could not run the reproduction; explain why in notes."
     },
+    "reproducer": {
+      "type": "string",
+      "description": "The exact reproduction you ran, verbatim: the full script, command line, or input you executed against ./src — not a description of it. This is what makes the evidence interpretable; without it the output below is meaningless. Include the language/runner so the analyst can re-run it (e.g. the .rb/.py file contents, or the shell commands)."
+    },
     "evidence": {
       "type": "string",
-      "description": "Raw reproduction evidence: script output, diff of behaviour, failing assertion, etc."
+      "description": "The output produced by running the reproducer above: stdout, stderr, exit code, failing assertion, diff of behaviour. Paste the relevant excerpts, not a summary."
     },
     "notes": {
       "type": "string",
