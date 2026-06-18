@@ -2,7 +2,7 @@
 name: repo-overview
 description: Run `brief --json` to produce a structured overview of the repository. Used by other skills as orientation.
 license: MIT
-compatibility: Requires the `brief` CLI (https://github.com/ecosyste-ms/brief) on PATH.
+compatibility: Requires the `brief` CLI (https://github.com/git-pkgs/brief) on PATH.
 metadata:
   scrutineer.version: 1
   scrutineer.output_file: report.json
