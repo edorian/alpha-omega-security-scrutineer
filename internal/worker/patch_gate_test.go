@@ -280,6 +280,45 @@ func TestParsePatchOutput_passWritesColumnsAndHistory(t *testing.T) {
 	}
 }
 
+func TestParsePatchOutput_resumedScanUsesLineageWorkspace(t *testing.T) {
+	// A patch run that resumes a session (ResumedFromScanID set) stages its
+	// src tree under the lineage-root workspace, not scan-<retryID>/src. The
+	// gate must resolve through scanWorkRoot like every other stage; using
+	// workRoot(scan.ID) here stat'd a directory that was never created and
+	// rejected every valid diff with "diff targets missing file".
+	w, finding := newPatchOutputFixture(t)
+	root := db.Scan{RepositoryID: finding.RepositoryID, Kind: JobSkill, Status: db.ScanDone}
+	if err := w.DB.Create(&root).Error; err != nil {
+		t.Fatal(err)
+	}
+	resumed := db.Scan{RepositoryID: finding.RepositoryID, Kind: JobSkill,
+		Status: db.ScanRunning, FindingID: &finding.ID, ResumedFromScanID: &root.ID}
+	if err := w.DB.Create(&resumed).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Stage where the workspace actually lives (lineage root), and confirm the
+	// retry's own id resolves to a different, nonexistent dir.
+	src := filepath.Join(w.scanWorkRoot(&resumed), "src")
+	if got := w.scanWorkRoot(&resumed); got == w.workRoot(resumed.ID) {
+		t.Fatalf("test precondition broken: lineage workspace %q equals retry workspace", got)
+	}
+	_, diff := gateRepo(t, src)
+	report := fmt.Sprintf(`{"patch":%q,"base_commit":"abc123"}`, diff)
+
+	var events []string
+	if err := w.parsePatchOutput(&resumed, report, func(e Event) { events = append(events, e.Text) }); err != nil {
+		t.Fatal(err)
+	}
+	var f db.Finding
+	w.DB.First(&f, finding.ID)
+	if f.SuggestedFix != diff {
+		t.Errorf("SuggestedFix not written for resumed scan; got %q (events=%v)", f.SuggestedFix, events)
+	}
+	if !containsSubstr(events, "gate passed") {
+		t.Errorf("events = %v, want gate-passed message", events)
+	}
+}
+
 func TestParsePatchOutput_gateRejectLeavesColumnsEmpty(t *testing.T) {
 	w, finding := newPatchOutputFixture(t)
 	sc := db.Scan{RepositoryID: finding.RepositoryID, Kind: JobSkill, Status: db.ScanRunning, FindingID: &finding.ID}
