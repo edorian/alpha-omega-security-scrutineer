@@ -69,17 +69,30 @@ func (w *Worker) parseRepoMetadataOutput(scan *db.Scan, report string, emit func
 	if t, ok := parseTimeField(emit, "pushed_at", m.PushedAt); ok {
 		updates["pushed_at"] = t
 	}
-	if m.HTMLURL != "" {
-		updates["html_url"] = m.HTMLURL
+	if u := safeURL(m.HTMLURL); u != "" {
+		updates["html_url"] = u
 	}
-	if m.IconURL != "" {
-		updates["icon_url"] = m.IconURL
+	if u := safeURL(m.IconURL); u != "" {
+		updates["icon_url"] = u
 	}
 	if err := w.DB.Model(&db.Repository{}).Where("id = ?", scan.RepositoryID).Updates(updates).Error; err != nil {
 		return fmt.Errorf("update repository: %w", err)
 	}
 	emit(Event{Kind: KindText, Text: "updated repository metadata"})
 	return nil
+}
+
+// safeURL returns u trimmed when it carries an http or https scheme, else
+// empty. Applied to model-emitted URLs (html_url, icon_url) before they
+// reach the database so a hostile metadata response cannot land a
+// javascript: or data: URI that the templates then render as a clickable
+// link (T7 in threatmodel.md).
+func safeURL(u string) string {
+	u = strings.TrimSpace(u)
+	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return u
+	}
+	return ""
 }
 
 // parsePackagesOutput replaces Package rows for the scan's repository. We
@@ -862,6 +875,17 @@ func (w *Worker) parseRevalidateOutput(scan *db.Scan, report string, emit func(E
 		return fmt.Errorf("load finding %d: %w", *scan.FindingID, err)
 	}
 
+	// Skip findings that have left the active funnel. A concurrent
+	// finding-dedup pass (or an analyst) may have closed this finding
+	// between enqueue and run; revalidating it would promote new->enriched,
+	// cache a verdict, and chain a verify run on a finding nobody will look
+	// at — wasted spend, and the promotion would clobber a just-applied
+	// duplicate status back to enriched.
+	if f.Status.Closed() {
+		emit(Event{Kind: KindText, Text: fmt.Sprintf("finding %d is %s; skipping revalidate", f.ID, f.Status)})
+		return nil
+	}
+
 	// Cache the verdict on the finding so the audit queue can filter
 	// without scanning finding_notes (#362). Written before the status
 	// transition so a true_positive promotion sits on top of the verdict
@@ -985,13 +1009,11 @@ func (w *Worker) dedupFinding(repoID, findingID uint) (db.Finding, bool) {
 	return f, true
 }
 
+// dedupCandidateOpen reports whether a finding is still in the active funnel
+// and so eligible to be marked (or kept as) a duplicate. The complement of
+// db.FindingLifecycle.Closed.
 func dedupCandidateOpen(status db.FindingLifecycle) bool {
-	switch status {
-	case db.FindingNew, db.FindingEnriched, db.FindingTriaged, db.FindingReady, db.FindingReported, db.FindingAcknowledged:
-		return true
-	default:
-		return false
-	}
+	return !status.Closed()
 }
 
 func (w *Worker) addDedupNote(duplicateID, canonicalID uint, reason string) error {

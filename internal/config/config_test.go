@@ -182,3 +182,32 @@ func TestLoad_parsesTheme(t *testing.T) {
 		t.Errorf("theme=%q, want catppuccin", c.Theme)
 	}
 }
+
+func TestValidateEffort(t *testing.T) {
+	for _, name := range []string{"", "low", "medium", "high", "xhigh", "max"} {
+		if err := ValidateEffort(name); err != nil {
+			t.Errorf("ValidateEffort(%q) = %v, want nil", name, err)
+		}
+	}
+	if err := ValidateEffort("superhigh"); err == nil {
+		t.Error("expected error for unknown effort")
+	}
+}
+
+func TestLoad_rejectsInvalidEffort(t *testing.T) {
+	path := write(t, "effort: superhigh\n")
+	if _, err := Load(path); err == nil {
+		t.Error("expected error for invalid effort value")
+	}
+}
+
+func TestLoad_parsesEffort(t *testing.T) {
+	path := write(t, "effort: max\n")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Effort != "max" {
+		t.Errorf("effort=%q, want max", c.Effort)
+	}
+}

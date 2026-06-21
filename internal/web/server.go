@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"filippo.io/age"
 	"gorm.io/gorm"
 
 	"scrutineer/internal/db"
@@ -72,6 +73,13 @@ type Server struct {
 	// stamp (e.g. an ldflags-less build outside a git checkout).
 	Commit string
 
+	// EncRecipients is the parsed recipients file; nil disables encrypted
+	// export. Supports age X25519 and SSH public keys.
+	EncRecipients []age.Recipient
+	// EncIdentities decrypts encrypted imports. Multiple entries support
+	// key rotation (old + new). nil disables encrypted import.
+	EncIdentities []age.Identity
+
 	// resolvePURL maps a Package URL to its source repository URL via
 	// packages.ecosyste.ms. Field rather than direct call so tests can
 	// stub the network lookup.
@@ -82,6 +90,11 @@ type Server struct {
 	// picker. Field rather than a direct worker call so tests can stub the
 	// network lookup, mirroring resolvePURL.
 	listBranches func(ctx context.Context, cloneURL string) ([]string, error)
+
+	// fetchOrgRepos lists every repository in a GitHub org for the
+	// org-import path. Field rather than a direct call so tests can stub
+	// the network lookup, mirroring resolvePURL and listBranches.
+	fetchOrgRepos func(ctx context.Context, org string) ([]OrgRepo, error)
 
 	skillNamesMu    sync.Mutex
 	skillNamesCache []string
@@ -231,10 +244,12 @@ func New(gdb *gorm.DB, q *queue.Queue, log *slog.Logger, broker *Broker, w *work
 		return nil, fmt.Errorf("load csaf schema: %w", err)
 	}
 	s := &Server{DB: gdb, Queue: q, Log: log, Broker: broker, Worker: w, tmpl: t,
-		resolvePURL: resolvePURLRepo, listBranches: worker.ListRemoteBranches}
+		resolvePURL: resolvePURLRepo, listBranches: worker.ListRemoteBranches,
+		fetchOrgRepos: fetchGitHubOrgRepos}
 	if w != nil {
 		w.OnFindingCreated = s.autoEnqueueRevalidate
 		w.OnRevalidateVerdict = s.autoChainVerifyAfterRevalidate
+		w.OnScanFinalized = s.autoEnqueueFindingDedupAfterDeepDive
 	}
 	return s, nil
 }
@@ -249,6 +264,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /repositories/branches", s.repoBranches)
 	mux.HandleFunc("POST /repositories", s.repoCreate)
 	mux.HandleFunc("POST /repositories/bulk", s.repoBulkCreate)
+	mux.HandleFunc("POST /repositories/org", s.repoOrgImport)
 	mux.HandleFunc("GET /repositories/{id}", s.repoShow)
 	mux.HandleFunc("GET /repositories/{id}/blob/{commit}/{path...}", s.repoBlob)
 	mux.HandleFunc("GET /repositories/{id}/report.md", s.repoReport)
@@ -276,6 +292,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /findings/{id}/verify", s.findingVerify)
 	mux.HandleFunc("POST /repositories/{id}/verify-all", s.repoVerifyAll)
 	mux.HandleFunc("POST /findings/{id}/disclose", s.findingDisclose)
+	mux.HandleFunc("POST /findings/{id}/public-issue", s.findingPublicIssue)
 	mux.HandleFunc("POST /findings/{id}/mitigate", s.findingMitigate)
 	mux.HandleFunc("POST /findings/{id}/patch", s.findingPatchRun)
 	mux.HandleFunc("POST /findings/{id}/exposure", s.findingExposureRun)
@@ -860,7 +877,7 @@ func (s *Server) findingToggleCounts(r *http.Request, scanners bool) (int64, int
 	missedWhere = append(missedWhere, "missed_count > 0")
 
 	scannerWhere, scannerArgs := findingIndexWhereSQL(r, true, true)
-	scannerWhere = append(scannerWhere, "scan_id NOT IN (SELECT id FROM scans WHERE skill_name = ? OR skill_name = '' OR skill_name IS NULL)")
+	scannerWhere = append(scannerWhere, scannerScanFilter)
 	scannerArgs = append(scannerArgs, deepDiveSkillName)
 
 	var counts struct {
@@ -883,7 +900,7 @@ func findingIndexWhereSQL(r *http.Request, includeScanners, includeMissed bool) 
 	where := []string{"1 = 1"}
 	var args []any
 	if !includeScanners {
-		where = append(where, "scan_id IN (SELECT id FROM scans WHERE skill_name = ? OR skill_name = '' OR skill_name IS NULL)")
+		where = append(where, nonScannerScanFilter)
 		args = append(args, deepDiveSkillName)
 	}
 	if sev := r.URL.Query().Get("severity"); sev != "" {
@@ -995,6 +1012,17 @@ const (
 	// deepDiveSkillName is the skill whose reports feed the Summary, Findings
 	// and Threat Model tabs on the repository page.
 	deepDiveSkillName = "security-deep-dive"
+	// nonScannerScanFilter selects findings whose parent scan is the
+	// security-deep-dive scanner, the legacy claude job (empty skill name),
+	// or has no recorded source — everything the UI groups under
+	// "non-scanner". scannerScanFilter is its structural inverse: the cheap
+	// tool scanners (semgrep, zizmor) and imported reports (CodeQL, Snyk,
+	// which carry the tool name as skill_name). Both take deepDiveSkillName
+	// as the single bound parameter; deriving one from the other keeps the
+	// Findings toggle and the dedup auto-enqueue agreeing on what "scanner"
+	// means without a second copy of the subquery to keep in sync.
+	nonScannerScanFilter = "scan_id IN (SELECT id FROM scans WHERE skill_name = ? OR skill_name = '' OR skill_name IS NULL)"
+	scannerScanFilter    = "NOT (" + nonScannerScanFilter + ")"
 	// threatModelSkillName is the skill whose report feeds the Threat Model
 	// tab when present; repos that predate it fall back to the boundaries
 	// section of the deep-dive report so older scans keep rendering.
@@ -1097,6 +1125,9 @@ const verifySkillName = "verify"
 // discloseSkillName is the skill the Draft disclosure button runs.
 const discloseSkillName = "disclose"
 
+// publicIssueSkillName is the skill the File public issue button runs.
+const publicIssueSkillName = "public-issue"
+
 // patchSkillName is the skill the Propose patch button runs.
 const patchSkillName = "patch"
 
@@ -1104,22 +1135,26 @@ const patchSkillName = "patch"
 const mitigateSkillName = "mitigate"
 
 func (s *Server) findingVerify(w http.ResponseWriter, r *http.Request) {
-	s.runFindingSkill(w, r, verifySkillName)
+	s.runFindingSkill(w, r, verifySkillName, true)
 }
 
 func (s *Server) findingDisclose(w http.ResponseWriter, r *http.Request) {
-	s.runFindingSkill(w, r, discloseSkillName)
+	s.runFindingSkill(w, r, discloseSkillName, false)
+}
+
+func (s *Server) findingPublicIssue(w http.ResponseWriter, r *http.Request) {
+	s.runFindingSkill(w, r, publicIssueSkillName, false)
 }
 
 func (s *Server) findingPatchRun(w http.ResponseWriter, r *http.Request) {
-	s.runFindingSkill(w, r, patchSkillName)
+	s.runFindingSkill(w, r, patchSkillName, false)
 }
 
 func (s *Server) findingMitigate(w http.ResponseWriter, r *http.Request) {
-	s.runFindingSkill(w, r, mitigateSkillName)
+	s.runFindingSkill(w, r, mitigateSkillName, false)
 }
 
-func (s *Server) runFindingSkill(w http.ResponseWriter, r *http.Request, name string) {
+func (s *Server) runFindingSkill(w http.ResponseWriter, r *http.Request, name string, skipOpen bool) {
 	f, ok := loadByID[db.Finding](s, w, r)
 	if !ok {
 		return
@@ -1134,12 +1169,32 @@ func (s *Server) runFindingSkill(w http.ResponseWriter, r *http.Request, name st
 		http.Error(w, name+" skill is not installed", http.StatusPreconditionFailed)
 		return
 	}
+	if skipOpen {
+		if openScan, ok := s.openFindingSkillScan(f.ID, name); ok {
+			setFlash(w, Flash{Category: warningKey, Title: name + " already queued or running"})
+			s.redirect(w, r, fmt.Sprintf("/scans/%d", openScan.ID))
+			return
+		}
+	}
 	scanID, err := s.enqueueSkillScoped(r.Context(), scan.RepositoryID, skill.ID, new(f.ID), r.FormValue("model"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.redirect(w, r, fmt.Sprintf("/scans/%d", scanID))
+}
+
+func (s *Server) openFindingSkillScan(findingID uint, skillName string) (db.Scan, bool) {
+	var scan db.Scan
+	err := s.DB.
+		Where("finding_id = ? AND skill_name = ? AND status IN ?",
+			findingID, skillName, []db.ScanStatus{db.ScanQueued, db.ScanRunning}).
+		Order("status_priority asc, id desc").
+		First(&scan).Error
+	if err != nil {
+		return db.Scan{}, false
+	}
+	return scan, true
 }
 
 // repoVerifyAll is the bulk equivalent of the per-finding Verify button: it
@@ -1325,6 +1380,11 @@ func (s *Server) advisoriesList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type findingWorkflowData struct {
+	db.Finding
+	VerifyInFlight bool
+}
+
 func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
 	var f db.Finding
 	if err := s.DB.Preload("Labels").First(&f, r.PathValue("id")).Error; err != nil {
@@ -1354,6 +1414,7 @@ func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
 	for _, l := range f.Labels {
 		selected[l.Name] = true
 	}
+	_, verifyInFlight := s.openFindingSkillScan(f.ID, verifySkillName)
 
 	type exposureRow struct {
 		Dep    db.Dependent
@@ -1400,8 +1461,14 @@ func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
 		"LatestRevalidate": latestRevalidate,
 		"AllLabels":        labels,
 		"Selected":         selected,
+		"Workflow":         findingWorkflowData{Finding: f, VerifyInFlight: verifyInFlight},
 		"Exposures":        exposures,
 		"ShowExposure":     findingSupportsExposure(scan),
+	}
+	if data["ShowExposure"].(bool) {
+		var depCount int64
+		s.DB.Model(&db.Dependent{}).Where("repository_id = ?", scan.RepositoryID).Count(&depCount)
+		data["HasDependents"] = depCount > 0
 	}
 	if id, c, ok := LookupCWE(f.CWE); ok {
 		data["CWE"] = map[string]any{"ID": id, "Name": c.Name, "Description": c.Description}
@@ -1437,22 +1504,33 @@ func (s *Server) repoCreate(w http.ResponseWriter, r *http.Request) {
 // behind the modal's top layer); plain form posts fall back to a basic
 // error page.
 func (s *Server) repoCreateError(w http.ResponseWriter, r *http.Request, title string, err error, status int) {
+	s.repoFormError(w, r, "add-repo-alert-oob", title, err, status)
+}
+
+// repoFormError renders an inline error for a failed add-repo-style
+// submission. For htmx requests it swaps the named OOB alert template (each
+// dialog has its own alert div, so the error lands in the visible one); plain
+// posts get a plain-text error at the given status.
+func (s *Server) repoFormError(w http.ResponseWriter, r *http.Request, alertTmpl, title string, err error, status int) {
 	if !isHX(r) {
 		http.Error(w, err.Error(), status)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if execErr := s.tmpl.ExecuteTemplate(w, "add-repo-alert-oob", Flash{
+	if execErr := s.tmpl.ExecuteTemplate(w, alertTmpl, Flash{
 		Title:       title,
 		Description: err.Error(),
 	}); execErr != nil {
-		s.Log.Error("render add-repo-alert-oob", "err", execErr)
+		s.Log.Error("render "+alertTmpl, "err", execErr)
 	}
 }
 
 // repoNew is the no-javascript fallback for the Add Repository dialog.
 func (s *Server) repoNew(w http.ResponseWriter, r *http.Request) {
-	s.render(w, r, "repo_new.html", map[string]any{"Bulk": r.FormValue("bulk") != ""})
+	s.render(w, r, "repo_new.html", map[string]any{
+		"Bulk": r.FormValue("bulk") != "",
+		"Org":  r.FormValue("org") != "",
+	})
 }
 
 // branchListTimeout caps the remote ls-remote so a slow or unreachable host

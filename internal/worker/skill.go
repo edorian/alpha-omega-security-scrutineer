@@ -531,7 +531,7 @@ func mergeLocations(base string, more ...string) string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(s string) {
-		for _, e := range strings.Split(s, "\n") {
+		for e := range strings.SplitSeq(s, "\n") {
 			e = strings.TrimSpace(e)
 			if e == "" || seen[e] {
 				continue
@@ -781,8 +781,36 @@ func stageSkill(skill *db.Skill, workRoot, dst string) error {
 		if err := copyAux(skill.SourcePath, dst); err != nil {
 			return fmt.Errorf("copy aux files: %w", err)
 		}
+		if err := mirrorScripts(skill.SourcePath, workRoot); err != nil {
+			return fmt.Errorf("mirror scripts: %w", err)
+		}
 	}
 	return nil
+}
+
+// mirrorScripts copies the skill's scripts/ directory (if any) to
+// workRoot/scripts/ so the `bash scripts/foo.sh` / `python3 scripts/foo.py`
+// instructions every SKILL.md uses resolve from the workspace root on the
+// first try, without the model having to glob for them. Same pattern as
+// schema.json (#221). The destination is cleared first so a retry after a
+// skill edit doesn't run a mix of old and new scripts.
+func mirrorScripts(src, workRoot string) error {
+	srcScripts := filepath.Join(src, "scripts")
+	info, err := os.Stat(srcScripts)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	dst := filepath.Join(workRoot, "scripts")
+	if err := os.RemoveAll(dst); err != nil {
+		return err
+	}
+	return copyTree(srcScripts, dst)
 }
 
 // renderSkillMD rebuilds a SKILL.md from the stored fields. The frontmatter
@@ -891,30 +919,24 @@ func stageContext(workRoot, apiBase, forkOrg, metadataDir string, scan *db.Scan,
 	return os.WriteFile(filepath.Join(workRoot, "context.json"), b, filePerm)
 }
 
-// copyAux walks src looking for any files other than SKILL.md and schema.json
-// (which are staged from the DB row) and copies them into dst at the same
-// relative path. This preserves scripts/ and references/ for skills that
-// bundle them.
+// copyAux copies every top-level entry in src other than SKILL.md and
+// schema.json (which are staged from the DB row) into dst, recursively.
+// Delegates to copyTree so symlink and permission handling lives in one
+// place; this preserves scripts/ and references/ for skills that bundle
+// them.
 func copyAux(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name == "SKILL.md" || name == "schema.json" {
+			continue
+		}
+		if err := copyTree(filepath.Join(src, name), filepath.Join(dst, name)); err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." || rel == "SKILL.md" || rel == "schema.json" {
-			return nil
-		}
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, dirPerm)
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, b, info.Mode())
-	})
+	}
+	return nil
 }

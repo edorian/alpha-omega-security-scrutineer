@@ -166,6 +166,7 @@ func (s *Server) orgShow(w http.ResponseWriter, r *http.Request) {
 	s.DB.Model(&db.Finding{}).
 		Select("repository_id, COUNT(*) AS n").
 		Where("repository_id IN ?", repoIDs).
+		Where("status NOT IN ?", db.ClosedFindingLifecycles).
 		Where("scan_id IN (?)", deepDiveScanIDs(s.DB)).
 		Group("repository_id").Scan(&counts)
 	for _, c := range counts {
@@ -178,6 +179,7 @@ func (s *Server) orgShow(w http.ResponseWriter, r *http.Request) {
 	// before Medium, which misreads for a stakeholder scanning the tab.
 	category := r.URL.Query().Get("category")
 	findingsQ := s.DB.Where("repository_id IN ?", repoIDs).
+		Where("status NOT IN ?", db.ClosedFindingLifecycles).
 		Where("scan_id IN (?)", deepDiveScanIDs(s.DB))
 	if category != "" {
 		findingsQ = applyCWECategoryFilter(findingsQ, category)

@@ -23,7 +23,7 @@ Run semgrep against `./src` using the `p/security-audit` and `p/secrets` ruleset
 
 ## Available scripts
 
-- `scripts/scan.py` — runs semgrep, maps results into findings with the fields we actually populate (`id`, `title`, `severity`, `cwe`, `location`, `trace`, `rating`). Severity maps: `ERROR` → High, `WARNING` → Medium, `INFO`/`INVENTORY`/`EXPERIMENT` → Low.
+- `scripts/scan.py` — runs semgrep, maps results into findings with the fields we actually populate (`id`, `title`, `severity`, `cwe`, `location`, `trace`, `rating`). Severity maps: `ERROR` → High, `WARNING` → Medium, `INFO`/`INVENTORY`/`EXPERIMENT` → Low. Test/spec directories and files (e.g. `test/`, `spec/`, `*_test.go`, `*.spec.ts`) are skipped via semgrep `--exclude` since findings there aren't shipped to production.
 
 ## What to do
 

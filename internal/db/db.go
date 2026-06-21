@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -170,12 +171,16 @@ type Scan struct {
 	// SessionID is the claude-code session this scan's run belongs to,
 	// captured from the stream-json init/result events. It is written as
 	// soon as the init event arrives (before the run finishes) so it
-	// survives a crash, and cleared once the scan reaches "done" so a
-	// deliberate re-run from the UI starts a fresh conversation. A retry
-	// of a failed scan carries this value forward so the runner can pass
-	// `claude -p --resume <id>` and continue from where it left off
-	// instead of restarting from turn 0.
+	// survives a crash, and cleared once the scan reaches ordinary "done"
+	// so a deliberate re-run from the UI starts a fresh conversation. A
+	// retry of a failed or max-turns-hit scan carries this value forward
+	// so the runner can pass `claude -p --resume <id>` and continue from
+	// where it left off instead of restarting from turn 0.
 	SessionID string
+	// MaxTurnsHit marks scans that completed with partial output because
+	// claude-code hit --max-turns. They stay status=done because the
+	// partial report is real output, but keep SessionID so Retry can resume.
+	MaxTurnsHit bool `gorm:"not null;default:false"`
 	// ResumedFromScanID points at the lineage-root scan whose claude session
 	// and workspace a retry reuses. Nil on a fresh scan. claude keys its
 	// session store by working directory, so a resuming run must execute
@@ -299,6 +304,14 @@ var FindingLifecycles = []FindingLifecycle{
 // ClosedFindingLifecycles are terminal or hidden-by-default findings.
 var ClosedFindingLifecycles = []FindingLifecycle{
 	FindingFixed, FindingPublished, FindingRejected, FindingDuplicate,
+}
+
+// Closed reports whether the lifecycle is terminal or hidden-by-default
+// (fixed, published, rejected, duplicate) — a finding no longer in the
+// active triage funnel. The in-memory counterpart to the "status NOT IN
+// ClosedFindingLifecycles" filter used in queries.
+func (s FindingLifecycle) Closed() bool {
+	return slices.Contains(ClosedFindingLifecycles, s)
 }
 
 func ClosedFindingLifecycleSQLValues() string {
@@ -825,6 +838,15 @@ type Skill struct {
 	// always applied on top. See internal/skills.PathIncluded.
 	Paths       string `gorm:"type:text"`
 	IgnorePaths string `gorm:"type:text"`
+
+	// Requires is a newline-joined list of skill names that must have a
+	// completed scan on the same repository before this skill can run.
+	// Set via `scrutineer.requires` in the SKILL.md frontmatter. The
+	// worker re-queues a job whose prereqs are not yet satisfied; see
+	// worker.preflightSkill. A prereq that is unregistered, disabled, or
+	// never enqueued for the repo is treated as satisfied so gating
+	// decisions in triage do not deadlock dependents.
+	Requires string `gorm:"type:text"`
 
 	Source     string // "local" | "remote" | "ui"
 	SourcePath string // directory on disk (local/remote) or empty (ui)

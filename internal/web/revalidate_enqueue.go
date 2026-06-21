@@ -3,8 +3,6 @@ package web
 import (
 	"context"
 
-	"gorm.io/gorm"
-
 	"scrutineer/internal/db"
 )
 
@@ -71,11 +69,19 @@ func (s *Server) hasOpenRevalidate(findingID, skillID uint) bool {
 }
 
 func (s *Server) hasOpenFindingScopedScan(findingID, skillID uint) bool {
+	return s.hasOpenScan("finding_id = ? AND skill_id = ?", findingID, skillID)
+}
+
+// hasOpenScan reports whether a queued or running scan matching the given
+// scope predicate already exists. Shared by the finding-scoped and
+// repo-scoped open-scan guards so the "open" definition (queued or running)
+// lives in one place.
+func (s *Server) hasOpenScan(scope string, args ...any) bool {
 	var n int64
 	if err := s.DB.Model(&db.Scan{}).
-		Where("finding_id = ? AND skill_id = ? AND status IN ?",
-			findingID, skillID, []db.ScanStatus{db.ScanQueued, db.ScanRunning}).
-		Count(&n).Error; err != nil && err != gorm.ErrRecordNotFound {
+		Where("status IN ?", []db.ScanStatus{db.ScanQueued, db.ScanRunning}).
+		Where(scope, args...).
+		Count(&n).Error; err != nil {
 		return false
 	}
 	return n > 0

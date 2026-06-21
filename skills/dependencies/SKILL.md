@@ -2,7 +2,7 @@
 name: dependencies
 description: Index the repository's dependencies via `git-pkgs list`, recording manifest path, ecosystem, and requirement per entry.
 license: MIT
-compatibility: Requires `git-pkgs` (https://github.com/ecosyste-ms/git-pkgs) and `python3` on PATH.
+compatibility: Requires `git-pkgs` (https://github.com/git-pkgs/git-pkgs) and `python3` on PATH.
 metadata:
   scrutineer.version: 1
   scrutineer.output_file: report.json

@@ -1292,6 +1292,33 @@ func TestFindingShow_rendersMissedCount(t *testing.T) {
 	}
 }
 
+func TestFindingShow_disablesVerifyActionWhenVerifyInFlight(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://example.com/r", Name: "r"}
+	s.DB.Create(&repo)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "security-deep-dive"}
+	s.DB.Create(&scan)
+	f := db.Finding{ScanID: scan.ID, RepositoryID: repo.ID, Title: "awaiting verify", Severity: "High", Status: db.FindingNew}
+	s.DB.Create(&f)
+	s.DB.Create(&db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanRunning,
+		StatusPriority: db.StatusPriorityFor(db.ScanRunning), SkillName: verifySkillName, FindingID: new(f.ID)})
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, localReq("GET", fmt.Sprintf("/findings/%d", f.ID)))
+	body := w.Body.String()
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, body)
+	}
+	if strings.Contains(body, fmt.Sprintf(`hx-post="/findings/%d/verify"`, f.ID)) {
+		t.Error("finding page should not render an active verify action while verify is in flight")
+	}
+	if !strings.Contains(body, `button type="button" class="btn" disabled`) || !strings.Contains(body, "Verify in progress") {
+		t.Errorf("finding page should render disabled verify state, body=%s", body)
+	}
+}
+
 func TestFindingShow_ghsaLinksToRepoAdvisory(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
@@ -1361,6 +1388,58 @@ func TestFindingShow_hidesExposureForZizmorFindings(t *testing.T) {
 	}
 	if strings.Contains(body, "Dependent exposure") || strings.Contains(body, "/exposure") {
 		t.Error("zizmor findings should not render dependent exposure controls")
+	}
+}
+
+func TestFindingShow_rendersPublicIssueActionForReadyFinding(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/foo/bar", Name: "bar"}
+	s.DB.Create(&repo)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "x"}
+	s.DB.Create(&scan)
+	f := db.Finding{ScanID: scan.ID, RepositoryID: repo.ID, Title: "low severity hardening", Severity: "Low", Status: db.FindingReady}
+	s.DB.Create(&f)
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, localReq("GET", fmt.Sprintf("/findings/%d", f.ID)))
+	body := w.Body.String()
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, body)
+	}
+	if !strings.Contains(body, fmt.Sprintf("/findings/%d/public-issue", f.ID)) {
+		t.Error("ready finding page missing public issue action")
+	}
+	if !strings.Contains(body, "File public issue") {
+		t.Error("ready finding page missing public issue label")
+	}
+}
+
+func TestFindingShow_hidesPublicIssueActionForHighSeverityReadyFinding(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/foo/bar", Name: "bar"}
+	s.DB.Create(&repo)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "x"}
+	s.DB.Create(&scan)
+	for _, severity := range []string{"High", "Critical"} {
+		f := db.Finding{ScanID: scan.ID, RepositoryID: repo.ID, Title: severity + " severity finding", Severity: severity, Status: db.FindingReady}
+		s.DB.Create(&f)
+
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, localReq("GET", fmt.Sprintf("/findings/%d", f.ID)))
+		body := w.Body.String()
+		if w.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", w.Code, body)
+		}
+		if strings.Contains(body, fmt.Sprintf("/findings/%d/public-issue", f.ID)) {
+			t.Errorf("%s ready finding page should not render public issue action", severity)
+		}
+		if strings.Contains(body, "File public issue") {
+			t.Errorf("%s ready finding page should not render public issue label", severity)
+		}
 	}
 }
 
@@ -1629,7 +1708,7 @@ func TestMaintainersSortOptions(t *testing.T) {
 	logins := func(body string) []string {
 		idx := map[string]int{}
 		for _, want := range []string{alpha, charlie, zeta} {
-			if i := strings.Index(body, want); i >= 0 {
+			if i := strings.Index(body, ">"+want+"</td>"); i >= 0 {
 				idx[want] = i
 			}
 		}
@@ -1792,6 +1871,77 @@ func TestFindingDiscloseEnqueuesDiscloseSkill(t *testing.T) {
 	}
 	if row.APIToken == "" {
 		t.Error("scan missing api token")
+	}
+}
+
+func TestFindingPublicIssueEnqueuesPublicIssueSkill(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/foo/bar", Name: "bar"}
+	s.DB.Create(&repo)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "security-deep-dive"}
+	s.DB.Create(&scan)
+	finding := db.Finding{ScanID: scan.ID, RepositoryID: repo.ID, FindingID: "F1", Title: "x", Severity: "Low", Status: db.FindingReady}
+	s.DB.Create(&finding)
+	publicIssue := db.Skill{Name: publicIssueSkillName, Description: "p", Body: "b", OutputFile: "report.json", OutputKind: "freeform", Version: 1, Active: true, Source: "ui"}
+	s.DB.Create(&publicIssue)
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/findings/%d/public-issue", finding.ID), nil)
+	req.Host = testHost
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	if !strings.HasPrefix(w.Header().Get("Location"), "/scans/") {
+		t.Errorf("expected redirect to scan, got %q", w.Header().Get("Location"))
+	}
+
+	var row db.Scan
+	s.DB.Where("skill_id = ?", publicIssue.ID).First(&row)
+	if row.FindingID == nil || *row.FindingID != finding.ID {
+		t.Errorf("scan FindingID = %v, want %d", row.FindingID, finding.ID)
+	}
+	if row.APIToken == "" {
+		t.Error("scan missing api token")
+	}
+}
+
+func TestFindingVerifySkipsOpenVerifyScan(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/foo/bar", Name: "bar"}
+	s.DB.Create(&repo)
+	parent := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "security-deep-dive"}
+	s.DB.Create(&parent)
+	finding := db.Finding{ScanID: parent.ID, RepositoryID: repo.ID, FindingID: "F1", Title: "x", Severity: "High", Status: db.FindingNew}
+	s.DB.Create(&finding)
+	verify := db.Skill{Name: verifySkillName, Description: "v", Body: "b", OutputFile: "report.json", OutputKind: "verify", Version: 1, Active: true, Source: "ui"}
+	s.DB.Create(&verify)
+	openScan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanQueued,
+		StatusPriority: db.StatusPriorityFor(db.ScanQueued), SkillName: verifySkillName, SkillID: new(verify.ID), FindingID: new(finding.ID)}
+	s.DB.Create(&openScan)
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/findings/%d/verify", finding.ID), nil)
+	req.Host = testHost
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	if got, want := w.Header().Get("Location"), fmt.Sprintf("/scans/%d", openScan.ID); got != want {
+		t.Errorf("redirect = %q, want existing scan %q", got, want)
+	}
+	var count int64
+	s.DB.Model(&db.Scan{}).
+		Where("finding_id = ? AND skill_name = ?", finding.ID, verifySkillName).
+		Count(&count)
+	if count != 1 {
+		t.Errorf("verify scans = %d, want 1", count)
 	}
 }
 
@@ -2341,6 +2491,27 @@ func TestFindingDisclose404WhenSkillMissing(t *testing.T) {
 	s.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusPreconditionFailed {
 		t.Fatalf("expected 412 when disclose skill not installed, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestFindingPublicIssue404WhenSkillMissing(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/foo/bar", Name: "bar"}
+	s.DB.Create(&repo)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "x"}
+	s.DB.Create(&scan)
+	finding := db.Finding{ScanID: scan.ID, RepositoryID: repo.ID, FindingID: "F1", Title: "x", Severity: "Low", Status: db.FindingReady}
+	s.DB.Create(&finding)
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/findings/%d/public-issue", finding.ID), nil)
+	req.Host = testHost
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412 when public issue skill not installed, got %d: %s", w.Code, w.Body)
 	}
 }
 
@@ -2979,6 +3150,55 @@ func TestRepoList_showsBranchTags(t *testing.T) {
 	}
 }
 
+func TestRepoList_showsLastScanDate(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	repo := db.Repository{URL: "https://github.com/example/repo", Name: "repo"}
+	s.DB.Create(&repo)
+	created := time.Date(2026, time.June, 16, 19, 15, 8, 0, time.UTC)
+	s.DB.Create(&db.Scan{
+		RepositoryID: repo.ID,
+		Kind:         "skill",
+		SkillName:    "triage",
+		Status:       db.ScanDone,
+		CreatedAt:    created,
+	})
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, localReq("GET", "/"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	row := requireRepoListRow(t, w.Body.String(), repo.ID)
+	if !strings.Contains(row, "2026-06-16 19:15") {
+		t.Errorf("repo row missing date-bearing last scan timestamp: %s", row)
+	}
+	if !strings.Contains(row, `title="2026-06-16 19:15:08 UTC"`) {
+		t.Errorf("repo row missing full last scan tooltip: %s", row)
+	}
+}
+
+func TestLayout_linksToProjectResources(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, localReq("GET", "/"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`href="https://github.com/alpha-omega-security/scrutineer"`,
+		`href="https://github.com/alpha-omega-security/scrutineer#readme"`,
+		`href="https://github.com/alpha-omega-security/scrutineer/issues/new"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("layout missing project link %s", want)
+		}
+	}
+}
+
 func TestScansIndex_showsBranchTag(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
@@ -3020,6 +3240,34 @@ func TestScansIndex_noBranchTagForDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestScansIndex_maxTurnsScanShowsBadgeAndRetry(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	repo := db.Repository{URL: "https://github.com/spf13/cobra", Name: "cobra"}
+	s.DB.Create(&repo)
+	skill := db.Skill{Name: "security-deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
+	s.DB.Create(&skill)
+	scan := db.Scan{
+		RepositoryID: repo.ID, Kind: "skill", SkillName: "security-deep-dive",
+		SkillID: &skill.ID, Status: db.ScanDone, StatusPriority: db.StatusPriorityFor(db.ScanDone),
+		MaxTurnsHit: true, SessionID: "sess-1",
+	}
+	s.DB.Create(&scan)
+
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, localReq("GET", "/scans"))
+	body := w.Body.String()
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, body)
+	}
+	if !strings.Contains(body, "max turns") {
+		t.Error("max-turns scan should render a badge")
+	}
+	if !strings.Contains(body, fmt.Sprintf(`/scans/%d/retry`, scan.ID)) {
+		t.Error("max-turns scan should render retry action")
+	}
+}
+
 func TestRetry_preservesSubPath(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
@@ -3048,6 +3296,43 @@ func TestRetry_preservesSubPath(t *testing.T) {
 	s.DB.Where("id != ?", orig.ID).First(&fresh)
 	if fresh.SubPath != "airflow-core" {
 		t.Errorf("retry lost sub-path: got %q, want airflow-core", fresh.SubPath)
+	}
+}
+
+func TestRetry_maxTurnsDoneScanResumesSession(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/apache/airflow.git", Name: "airflow"}
+	s.DB.Create(&repo)
+	skill := db.Skill{Name: "security-deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
+	s.DB.Create(&skill)
+	orig := db.Scan{
+		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone,
+		SkillID: &skill.ID, SkillName: "security-deep-dive",
+		SessionID: "sess-1", MaxTurnsHit: true, FinishedAt: new(time.Now()),
+	}
+	s.DB.Create(&orig)
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/scans/%d/retry", orig.ID), nil)
+	req.Host = testHost
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("retry status %d: %s", w.Code, w.Body)
+	}
+
+	var fresh db.Scan
+	s.DB.Where("id != ?", orig.ID).First(&fresh)
+	if fresh.SessionID != "sess-1" {
+		t.Errorf("retry session id = %q, want sess-1", fresh.SessionID)
+	}
+	if fresh.ResumedFromScanID == nil || *fresh.ResumedFromScanID != orig.ID {
+		t.Errorf("retry resumed_from_scan_id = %v, want %d", fresh.ResumedFromScanID, orig.ID)
+	}
+	if fresh.MaxTurnsHit {
+		t.Error("fresh retry should not inherit MaxTurnsHit before it runs")
 	}
 }
 

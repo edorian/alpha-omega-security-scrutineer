@@ -35,6 +35,20 @@ const (
 // more than this; a scan that does is almost always wedged.
 const DefaultScanTimeout = time.Hour
 
+// Prereq gate defaults. A skill declaring scrutineer.requires has its
+// dispatch deferred when any listed upstream scan is enqueued but not
+// yet done; the queue message is re-published with the delay doubling
+// from DefaultPrereqRetryDelay up to MaxPrereqRetryDelay, for up to
+// DefaultMaxPrereqAttempts attempts. With the defaults that spans
+// roughly 90 minutes of wall clock — enough for an hour-scale prereq
+// scan to finish under runner contention — before the scan fails with
+// a "prereqs not satisfied" error.
+const (
+	DefaultPrereqRetryDelay  = 30 * time.Second
+	MaxPrereqRetryDelay      = 5 * time.Minute
+	DefaultMaxPrereqAttempts = 20
+)
+
 // defaultLogFlushInterval bounds how long a scan's log can lag behind the
 // in-memory accumulator. Each emitted event used to UPDATE the whole
 // scans.log TEXT column, so a token-heavy scan fired thousands of full
@@ -71,7 +85,30 @@ type Worker struct {
 	// lower than the original claim, and the chain to verify uses the
 	// revised value.
 	OnRevalidateVerdict func(scan *db.Scan, finding *db.Finding, verdict, severity string)
-	ScanTimeout         time.Duration
+	// OnScanFinalized, when non-nil, is called once after a scan finishes its
+	// analysis with findings committed and the worker has no further writes
+	// to make for the scan — that is, ScanDone or a fail_on-threshold
+	// failure (which still persists findings). Named "finalized" rather than
+	// "done" precisely because it also fires on that failure path. The web
+	// layer wires it up to auto-enqueue a repository-scoped finding-dedup
+	// pass after a security-deep-dive run adds new findings to a repo that
+	// already holds other non-scanner findings. Firing post-commit means the
+	// dedup run sees the full finding set, and the worker has no queue access
+	// of its own so this callback is the seam.
+	OnScanFinalized func(scan *db.Scan)
+	ScanTimeout     time.Duration
+
+	// Queue is the queue this worker is registered on. Required for the
+	// prereq gate to re-enqueue a scan whose upstream skills have not yet
+	// completed. Register() sets it from its argument so callers do not
+	// need to wire it twice.
+	Queue *queue.Queue
+
+	// PrereqRetryDelay and MaxPrereqAttempts override the prereq-gate
+	// defaults. Tests set these to keep gate behaviour deterministic
+	// without the production backoff. Zero falls through to the consts.
+	PrereqRetryDelay  time.Duration
+	MaxPrereqAttempts int
 	// SchemaStrict makes a report.json that fails validation against the
 	// skill's schema.json fail the scan. When false the validator output
 	// is emitted to the log and the kind-specific parser still runs.
@@ -180,14 +217,13 @@ func (w *Worker) claudeConfigDirID(scanID uint) string {
 }
 
 // RemoveScanArtifacts deletes the on-disk per-scan workspace and claude
-// session store for scanID. A terminal scan removes its own workspace and a
-// done scan its session store, so this reclaims space left by scans still
-// holding a workspace (queued/running, or crashed before cleanup) and by
-// failed scans whose session store is kept for --resume. It is a no-op when
-// the directories are already gone. Passing every scan id of a repository
-// covers resume lineages too: a retry reuses its root's workspace id, and the
-// root scan is itself in the repo, while the retry's own id maps to a
-// directory that was never created.
+// session store for scanID. Normal terminal cleanup removes workspaces, while
+// resumable scans (failed or max-turns-hit) keep their session store for
+// --resume; this explicit removal path reclaims both. It is a no-op when the
+// directories are already gone. Passing every scan id of a repository covers
+// resume lineages too: a retry reuses its root's workspace id, and the root
+// scan is itself in the repo, while the retry's own id maps to a directory
+// that was never created.
 func (w *Worker) RemoveScanArtifacts(scanID uint) error {
 	return errors.Join(
 		os.RemoveAll(w.workRoot(scanID)),
@@ -197,9 +233,9 @@ func (w *Worker) RemoveScanArtifacts(scanID uint) error {
 
 // applyResume fills a SkillJob's session-resume inputs from the scan: the
 // claude session id to --resume (set on a retry that carries one forward
-// from a failed run) and the persistent config dir the docker runner mounts
-// so the session store survives a container exit. A fresh scan has an empty
-// SessionID, so the runner just starts a new conversation.
+// from a failed or max-turns-hit run) and the persistent config dir the docker
+// runner mounts so the session store survives a container exit. A fresh scan
+// has an empty SessionID, so the runner just starts a new conversation.
 func (w *Worker) applyResume(scan *db.Scan, sj *SkillJob, emit func(Event)) {
 	sj.ClaudeConfigDir = w.claudeConfigDir(scan)
 	if scan.SessionID != "" {
@@ -248,8 +284,9 @@ func (w *Worker) scanEmitter(scan *db.Scan) func(Event) {
 
 // clearSessionStore wipes a finished scan's resume state so its next
 // deliberate re-run starts fresh: it drops the session id and tears down the
-// persisted claude session store. Only called on "done" — a failed scan
-// keeps both so a UI retry can --resume instead of restarting from turn 0.
+// persisted claude session store. Only called on ordinary "done" — failed and
+// max-turns-hit scans keep both so a UI retry can --resume instead of
+// restarting from turn 0.
 func (w *Worker) clearSessionStore(scan *db.Scan) {
 	scan.SessionID = ""
 	if rmErr := os.RemoveAll(w.claudeConfigDir(scan)); rmErr != nil {
@@ -258,6 +295,7 @@ func (w *Worker) clearSessionStore(scan *db.Scan) {
 }
 
 func (w *Worker) Register(q *queue.Queue) {
+	w.Queue = q
 	q.Register(JobSkill, w.wrap(w.doSkill))
 	q.Register(JobExposure, w.wrap(w.doExposure))
 }
@@ -284,6 +322,16 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 		if scan.Status != db.ScanQueued {
 			w.Log.Info("dropping stale job", "scan", scan.ID, "status", scan.Status)
 			return nil
+		}
+
+		if scan.Kind == JobSkill {
+			deferred, err := w.preflightSkill(ctx, &scan, p.Attempt)
+			if err != nil {
+				return err
+			}
+			if deferred {
+				return nil
+			}
 		}
 
 		timeout := w.ScanTimeout
@@ -316,28 +364,51 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 		emit := w.scanEmitter(&scan)
 
 		report, err := h(ctx, &scan, emit)
+		return w.finalizeScan(ctx, &scan, report, err, timeout, emit)
+	}
+}
 
-		finishScan(ctx, &scan, report, err, timeout, emit)
-		if scan.Status == db.ScanDone {
-			w.clearSessionStore(&scan)
+// finalizeScan persists the terminal scan state, fires post-completion
+// hooks, cleans up the workspace, and publishes the status. It returns an
+// error only when the terminal save fails, which wrap propagates to goqite.
+func (w *Worker) finalizeScan(ctx context.Context, scan *db.Scan, report string, err error, timeout time.Duration, emit func(Event)) error {
+	finishScan(ctx, scan, report, err, timeout, emit)
+	if scan.Status == db.ScanDone && !scan.MaxTurnsHit {
+		w.clearSessionStore(scan)
+	}
+	scan.StatusPriority = db.StatusPriorityFor(scan.Status)
+	if saveErr := w.DB.Save(scan).Error; saveErr != nil {
+		return saveErr
+	}
+	w.maybeFireScanFinalized(scan, err)
+	if scan.Status.Terminal() {
+		if rmErr := os.RemoveAll(w.scanWorkRoot(scan)); rmErr != nil {
+			w.Log.Warn("workspace cleanup failed", "scan", scan.ID, "err", rmErr)
 		}
-		scan.StatusPriority = db.StatusPriorityFor(scan.Status)
-		if saveErr := w.DB.Save(&scan).Error; saveErr != nil {
-			return saveErr
-		}
-		if scan.Status.Terminal() {
-			if rmErr := os.RemoveAll(w.scanWorkRoot(&scan)); rmErr != nil {
-				w.Log.Warn("workspace cleanup failed", "scan", scan.ID, "err", rmErr)
-			}
-		}
-		w.publish(scan.ID, scan.RepositoryID, "scan-status", string(scan.Status))
-		w.Log.Info("job finished", "scan", scan.ID, "kind", scan.Kind, "status", scan.Status)
-		return nil
+	}
+	w.publish(scan.ID, scan.RepositoryID, "scan-status", string(scan.Status))
+	w.Log.Info("job finished", "scan", scan.ID, "kind", scan.Kind, "status", scan.Status)
+	return nil
+}
+
+// maybeFireScanFinalized invokes the OnScanFinalized hook once a scan has
+// finished its analysis with findings committed. A fail_on threshold leaves
+// Status=ScanFailed but the findings are already persisted (see
+// finishErroredScan), so a deep-dive that trips fail_on must still trigger
+// downstream dedup — exactly the high-severity case we most want deduped.
+func (w *Worker) maybeFireScanFinalized(scan *db.Scan, runErr error) {
+	if w.OnScanFinalized == nil {
+		return
+	}
+	_, failOnThreshold := errors.AsType[*FailOnThresholdError](runErr)
+	if scan.Status == db.ScanDone || failOnThreshold {
+		w.OnScanFinalized(scan)
 	}
 }
 
 func finishScan(ctx context.Context, scan *db.Scan, report string, err error, timeout time.Duration, emit func(Event)) {
 	scan.FinishedAt = new(time.Now())
+	scan.MaxTurnsHit = false
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		scan.Status = db.ScanFailed
@@ -367,6 +438,7 @@ func finishErroredScan(scan *db.Scan, report string, err error, emit func(Event)
 		scan.Status = db.ScanDone
 		scan.Report = report
 		scan.Error = ""
+		scan.MaxTurnsHit = true
 		emit(Event{Kind: KindText, Text: "scan completed (hit max turns cap)"})
 	case failOnThreshold:
 		scan.Report = report

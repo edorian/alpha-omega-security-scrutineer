@@ -206,6 +206,49 @@ func TestParseRepoMetadata_updatesRepository(t *testing.T) {
 	}
 }
 
+func TestSafeURL(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"https://github.com/x/y", "https://github.com/x/y"},
+		{"http://example.com", "http://example.com"},
+		{"  https://example.com  ", "https://example.com"},
+		{"javascript:alert(1)", ""},
+		{"data:text/html,<script>alert(1)</script>", ""},
+		{"vbscript:msgbox(1)", ""},
+		{"//evil.com/x", ""},
+		{"file:///etc/passwd", ""},
+		{"HTTPS://example.com", ""},
+		{"", ""},
+		{"   ", ""},
+	}
+	for _, tc := range cases {
+		if got := safeURL(tc.in); got != tc.want {
+			t.Errorf("safeURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestParseRepoMetadata_dropsUnsafeURLs(t *testing.T) {
+	report := `{
+		"full_name": "example/x",
+		"html_url": "javascript:alert(1)",
+		"icon_url": "data:text/html,<script>alert(1)</script>"
+	}`
+	repo, gdb := runSkillWithReport(t, "repo_metadata", report)
+	var got db.Repository
+	gdb.First(&got, repo.ID)
+	if got.HTMLURL != "" {
+		t.Errorf("HTMLURL = %q, want empty (javascript: scheme rejected)", got.HTMLURL)
+	}
+	if got.IconURL != "" {
+		t.Errorf("IconURL = %q, want empty (data: scheme rejected)", got.IconURL)
+	}
+	if got.FullName != "example/x" {
+		t.Errorf("safe fields should still be written, got FullName=%q", got.FullName)
+	}
+}
+
 func TestParsePackages_replacesPackageRows(t *testing.T) {
 	report := `{"packages":[
 		{"name":"foo","ecosystem":"rubygems","purl":"pkg:gem/foo","latest_version":"1.0.0","downloads":1000000,"dependent_repos":50,"dependent_packages_url":"https://packages.ecosyste.ms/api/v1/registries/rubygems/packages/foo/dependent_packages","metadata":{"foo":"bar"}},
@@ -510,6 +553,23 @@ func TestParseTimeField_emitsOnUnparseable(t *testing.T) {
 	}
 	if len(events) != 1 || !strings.Contains(events[0].Text, `pushed_at value "yesterday"`) {
 		t.Errorf("unparseable input should emit a transcript line: %+v", events)
+	}
+}
+
+func TestParseRevalidate_skipsClosedFinding(t *testing.T) {
+	// A concurrent finding-dedup pass may close the finding between enqueue
+	// and run. Revalidate must not promote it, cache a verdict, or chain a
+	// verify on it.
+	report := `{"verdict":"true_positive","reason":"sink still reachable"}`
+	f, gdb := runSkillWithFinding(t, "revalidate", report, db.FindingDuplicate)
+	if f.Status != db.FindingDuplicate {
+		t.Errorf("status = %s, want duplicate (unchanged)", f.Status)
+	}
+	if f.LastRevalidateVerdict != "" {
+		t.Errorf("last_revalidate_verdict = %q, want empty (no write on closed finding)", f.LastRevalidateVerdict)
+	}
+	if notes := findingNotes(gdb, f.ID); len(notes) != 0 {
+		t.Errorf("want no notes on a skipped finding, got %+v", notes)
 	}
 }
 

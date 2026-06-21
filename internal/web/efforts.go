@@ -10,7 +10,9 @@ type Effort struct {
 }
 
 // Efforts is the ordered effort scale, fastest first. The Values are the
-// only levels `claude --effort` accepts.
+// only levels `claude --effort` accepts. This is the source of truth for the
+// effort levels; config.Efforts mirrors the Values for startup validation, and
+// TestEffortsMatchConfig guards the two against drift.
 var Efforts = []Effort{
 	{"low", "Low"},
 	{"medium", "Medium"},

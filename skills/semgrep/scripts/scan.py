@@ -27,23 +27,51 @@ SEVERITY_MAP = {
     "EXPERIMENT": "Low",
 }
 
+# Test/spec code is not shipped to production, so findings there are noise.
+# semgrep's --exclude takes a glob (matched against the path) and is
+# repeatable; these cover the common directory and filename conventions.
+EXCLUDES = [
+    "test",
+    "tests",
+    "spec",
+    "specs",
+    "__tests__",
+    "*_test.go",
+    "*_test.py",
+    "test_*.py",
+    "*.test.js",
+    "*.test.ts",
+    "*.test.jsx",
+    "*.test.tsx",
+    "*.spec.js",
+    "*.spec.ts",
+    "*.spec.jsx",
+    "*.spec.tsx",
+    "*_spec.rb",
+    "*_test.rb",
+]
+
 
 def main():
     if shutil.which("semgrep") is None:
         print(json.dumps({"findings": [], "error": "semgrep not on PATH"}))
         sys.exit(0)
 
+    cmd = [
+        "semgrep",
+        "--config",
+        "p/security-audit",
+        "--config",
+        "p/secrets",
+        "--json",
+        "--quiet",
+    ]
+    for pattern in EXCLUDES:
+        cmd += ["--exclude", pattern]
+    cmd.append(".")
+
     proc = subprocess.run(
-        [
-            "semgrep",
-            "--config",
-            "p/security-audit",
-            "--config",
-            "p/secrets",
-            "--json",
-            "--quiet",
-            ".",
-        ],
+        cmd,
         cwd="./src",
         capture_output=True,
         text=True,
