@@ -112,7 +112,7 @@ Even where the input is attacker-controlled, check the precondition does not sub
 
 ### Step 3: Validate
 
-Write a reproduction script and run it. The script demonstrates that the sink does what you traced — hostile input in, dangerous behaviour out. Paste the script and its output.
+Write a reproduction script and run it. The script demonstrates that the sink does what you traced — hostile input in, dangerous behaviour out. Into the finding's `validation` field, paste the script verbatim — its full contents, not a description of it — followed by the output of running it. A `validation` that shows output but not the script that produced it is useless: a later verify run, or an analyst, cannot tell what was executed or re-run it. Include enough to re-run: the language/runner, the exact input, the command line. If the reproduction is a shell session rather than a file, paste the commands and their output.
 
 Before concluding you cannot reproduce, enumerate the mechanisms that produce the kind of value the sink consumes. If the sink takes a path: argv, environment, glob expansion, archive extraction. If the sink takes an identifier: dynamic-definition primitives, struct-from-hash, deserialisation that turns keys into accessors, ORM attribute generation. If the sink takes a host: user input, redirect targets, DNS, service discovery. Write the list. Try each.
 
