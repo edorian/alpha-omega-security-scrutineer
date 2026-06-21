@@ -1,6 +1,28 @@
 package web
 
-import "testing"
+import (
+	"testing"
+
+	"scrutineer/internal/config"
+)
+
+// TestEffortsMatchConfig guards against drift between web.Efforts (the source
+// of truth, coupled to display labels) and config.Efforts (the independent
+// list config.Load validates against at startup). Add a level to one and this
+// fails until the other catches up.
+func TestEffortsMatchConfig(t *testing.T) {
+	if len(Efforts) != len(config.Efforts) {
+		t.Fatalf("len(web.Efforts)=%d, len(config.Efforts)=%d", len(Efforts), len(config.Efforts))
+	}
+	for i, e := range Efforts {
+		if e.Value != config.Efforts[i] {
+			t.Errorf("Efforts[%d]=%q, config.Efforts[%d]=%q", i, e.Value, i, config.Efforts[i])
+		}
+		if err := config.ValidateEffort(e.Value); err != nil {
+			t.Errorf("config.ValidateEffort(%q) = %v, want nil", e.Value, err)
+		}
+	}
+}
 
 func TestValidEffort(t *testing.T) {
 	for _, e := range []string{"low", "medium", "high", "xhigh", "max"} {

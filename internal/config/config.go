@@ -135,6 +135,21 @@ func ValidateTheme(s string) error {
 	return fmt.Errorf("theme: unknown %q", s)
 }
 
+// Efforts lists every valid effort level, fastest first. These are the only
+// values `claude --effort` accepts. Mirror of web.Efforts (which owns the
+// display labels); a cross-check test in the web package guards against drift.
+var Efforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// ValidateEffort returns an error when s is not a known effort level. Empty
+// is valid (caller keeps the default). Exposed so the CLI flag can use the
+// same rule as the YAML field.
+func ValidateEffort(s string) error {
+	if s == "" || slices.Contains(Efforts, s) {
+		return nil
+	}
+	return fmt.Errorf("effort: unknown %q", s)
+}
+
 // Load reads a YAML config from path. Returns (nil, nil) when the file
 // does not exist and the caller passed "" or DefaultPath — making config
 // fully opt-in. Explicit paths that don't exist are an error.
@@ -161,6 +176,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if err := ValidateTheme(c.Theme); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if err := ValidateEffort(c.Effort); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	return &c, nil
