@@ -55,27 +55,33 @@ func WriteFindingField(gdb *gorm.DB, findingID uint, field, newValue string, sou
 	if err := validateFindingField(field, newValue); err != nil {
 		return err
 	}
-	if err := gdb.Model(&Finding{}).Where("id = ?", f.ID).Update(colName, newValue).Error; err != nil {
-		return fmt.Errorf("update %s: %w", colName, err)
-	}
-	if err := gdb.Create(&FindingHistory{
-		FindingID: f.ID,
-		Field:     field,
-		OldValue:  old,
-		NewValue:  newValue,
-		Source:    source,
-		By:        by,
-		CreatedAt: time.Now(),
-	}).Error; err != nil {
-		return err
-	}
-	if field == "cvss_vector" {
-		return syncCVSSScore(gdb, &f, newValue, source, by)
-	}
-	if field == "cvss_v4_vector" {
-		return syncCVSSv4Score(gdb, &f, newValue, source, by)
-	}
-	return nil
+	// The column update, its history row, and any dependent CVSS-score
+	// sync must commit together: a failure between them would change the
+	// stored value with no matching history row (breaking the audit
+	// trail) or leave cvss_score inconsistent with cvss_vector.
+	return gdb.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&Finding{}).Where("id = ?", f.ID).Update(colName, newValue).Error; err != nil {
+			return fmt.Errorf("update %s: %w", colName, err)
+		}
+		if err := tx.Create(&FindingHistory{
+			FindingID: f.ID,
+			Field:     field,
+			OldValue:  old,
+			NewValue:  newValue,
+			Source:    source,
+			By:        by,
+			CreatedAt: time.Now(),
+		}).Error; err != nil {
+			return err
+		}
+		if field == "cvss_vector" {
+			return syncCVSSScore(tx, &f, newValue, source, by)
+		}
+		if field == "cvss_v4_vector" {
+			return syncCVSSv4Score(tx, &f, newValue, source, by)
+		}
+		return nil
+	})
 }
 
 // WriteFindingTimeField is the time.Time twin of WriteFindingField for
@@ -102,22 +108,26 @@ func WriteFindingTimeField(gdb *gorm.DB, findingID uint, field string, newValue 
 	if old != nil && old.Equal(newUTC) {
 		return nil
 	}
-	if err := gdb.Model(&Finding{}).Where("id = ?", f.ID).Update(colName, newUTC).Error; err != nil {
-		return fmt.Errorf("update %s: %w", colName, err)
-	}
 	oldStr := ""
 	if old != nil {
 		oldStr = old.UTC().Format(time.RFC3339)
 	}
-	return gdb.Create(&FindingHistory{
-		FindingID: f.ID,
-		Field:     field,
-		OldValue:  oldStr,
-		NewValue:  newUTC.Format(time.RFC3339),
-		Source:    source,
-		By:        by,
-		CreatedAt: time.Now(),
-	}).Error
+	// Column update and history row must commit together so the audit
+	// trail can't lose a row on a mid-write failure.
+	return gdb.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&Finding{}).Where("id = ?", f.ID).Update(colName, newUTC).Error; err != nil {
+			return fmt.Errorf("update %s: %w", colName, err)
+		}
+		return tx.Create(&FindingHistory{
+			FindingID: f.ID,
+			Field:     field,
+			OldValue:  oldStr,
+			NewValue:  newUTC.Format(time.RFC3339),
+			Source:    source,
+			By:        by,
+			CreatedAt: time.Now(),
+		}).Error
+	})
 }
 
 // findingTimeFieldAccessor mirrors findingFieldAccessor for timestamp

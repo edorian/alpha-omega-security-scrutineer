@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -217,6 +218,83 @@ func TestWriteFindingField_cvssVectorEmptyClearsScore(t *testing.T) {
 	gdb.First(&refreshed, f.ID)
 	if refreshed.CVSSScore != 0 {
 		t.Errorf("score = %v, want 0", refreshed.CVSSScore)
+	}
+}
+
+// failCreate registers a before-create callback that fails any insert for
+// which pred returns true, simulating a mid-write database error. The
+// returned func removes the injection.
+func failCreate(t *testing.T, gdb *gorm.DB, pred func(*gorm.DB) bool) func() {
+	t.Helper()
+	const name = "test:fail_create"
+	if err := gdb.Callback().Create().Before("gorm:create").Register(name, func(d *gorm.DB) {
+		if pred(d) {
+			_ = d.AddError(errors.New("injected insert failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if err := gdb.Callback().Create().Remove(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// If the history insert fails, the column update must roll back with it:
+// the stored value is unchanged and no audit row is left behind.
+func TestWriteFindingField_rollsBackOnHistoryFailure(t *testing.T) {
+	gdb := newTestDB(t)
+	f := seedFinding(t, gdb)
+
+	remove := failCreate(t, gdb, func(d *gorm.DB) bool {
+		return d.Statement.Table == "finding_histories"
+	})
+	if err := WriteFindingField(gdb, f.ID, severityField, "Critical", SourceAnalyst, "me"); err == nil {
+		t.Fatal("expected error when the history insert fails")
+	}
+	remove()
+
+	var refreshed Finding
+	gdb.First(&refreshed, f.ID)
+	if refreshed.Severity != "High" {
+		t.Errorf("severity = %q, want High (column update must roll back with the failed history row)", refreshed.Severity)
+	}
+	var count int64
+	gdb.Model(&FindingHistory{}).Where("finding_id = ?", f.ID).Count(&count)
+	if count != 0 {
+		t.Errorf("history rows = %d, want 0", count)
+	}
+}
+
+// A cvss_vector write fans out to three database writes (the vector column +
+// its history row, then the synced score column + its history row). Failing
+// the score history insert — which happens last — must roll back the whole
+// chain, so the vector never lands without a matching score.
+func TestWriteFindingField_cvssSyncRollsBackAtomically(t *testing.T) {
+	gdb := newTestDB(t)
+	f := seedFinding(t, gdb)
+
+	remove := failCreate(t, gdb, func(d *gorm.DB) bool {
+		fh, ok := d.Statement.Dest.(*FindingHistory)
+		return ok && fh.Field == "cvss_score"
+	})
+	const vec = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+	if err := WriteFindingField(gdb, f.ID, "cvss_vector", vec, SourceAnalyst, "me"); err == nil {
+		t.Fatal("expected error when the cvss_score history insert fails")
+	}
+	remove()
+
+	var refreshed Finding
+	gdb.First(&refreshed, f.ID)
+	if refreshed.CVSSVector != "" || refreshed.CVSSScore != 0 {
+		t.Errorf("vector=%q score=%v, want both cleared (vector column, vector history, and score must roll back together)",
+			refreshed.CVSSVector, refreshed.CVSSScore)
+	}
+	var count int64
+	gdb.Model(&FindingHistory{}).Where("finding_id = ?", f.ID).Count(&count)
+	if count != 0 {
+		t.Errorf("history rows = %d, want 0 (vector history must roll back with the failed score history)", count)
 	}
 }
 

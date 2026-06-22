@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -265,6 +266,46 @@ func TestParsePackages_replacesPackageRows(t *testing.T) {
 	}
 	if rows[0].Metadata == "" {
 		t.Error("package metadata blob not stored")
+	}
+}
+
+// A failed insert must not destroy the existing rows: the delete and the
+// re-insert run in one transaction, so a mid-write failure rolls the delete
+// back and the repository keeps the packages from its last good scan.
+func TestParsePackagesOutput_rollsBackOnInsertFailure(t *testing.T) {
+	repo, gdb := runSkillWithReport(t, "packages",
+		`{"packages":[{"name":"old","ecosystem":"npm","purl":"pkg:npm/old"}]}`)
+	var before int64
+	gdb.Model(&db.Package{}).Where("repository_id = ?", repo.ID).Count(&before)
+	if before != 1 {
+		t.Fatalf("seed rows = %d, want 1", before)
+	}
+
+	scan := db.Scan{RepositoryID: repo.ID}
+	gdb.Create(&scan)
+
+	const name = "test:fail_packages_insert"
+	if err := gdb.Callback().Create().Before("gorm:create").Register(name, func(d *gorm.DB) {
+		if d.Statement.Table == "packages" {
+			_ = d.AddError(errors.New("injected insert failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &Worker{DB: gdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	err := w.parsePackagesOutput(&scan, `{"packages":[{"name":"new","ecosystem":"npm","purl":"pkg:npm/new"}]}`, func(Event) {})
+	if err == nil {
+		t.Fatal("expected error from the injected insert failure")
+	}
+	if err := gdb.Callback().Create().Remove(name); err != nil {
+		t.Fatal(err)
+	}
+
+	var after []db.Package
+	gdb.Where("repository_id = ?", repo.ID).Find(&after)
+	if len(after) != 1 || after[0].Name != "old" {
+		t.Errorf("rows after failed insert = %+v, want [old] (delete must roll back)", after)
 	}
 }
 

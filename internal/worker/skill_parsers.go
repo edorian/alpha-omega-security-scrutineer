@@ -10,6 +10,7 @@ import (
 	"time"
 
 	mavenpom "github.com/git-pkgs/pom"
+	"gorm.io/gorm"
 
 	"scrutineer/internal/db"
 )
@@ -120,9 +121,6 @@ func (w *Worker) parsePackagesOutput(scan *db.Scan, report string, emit func(Eve
 	if err := json.Unmarshal([]byte(report), &result); err != nil {
 		return fmt.Errorf("parse packages: %w", err)
 	}
-	if err := w.DB.Where("repository_id = ?", scan.RepositoryID).Delete(&db.Package{}).Error; err != nil {
-		return fmt.Errorf("delete old packages: %w", err)
-	}
 	rows := make([]db.Package, 0, len(result.Packages))
 	for _, p := range result.Packages {
 		row := db.Package{
@@ -149,10 +147,21 @@ func (w *Worker) parsePackagesOutput(scan *db.Scan, report string, emit func(Eve
 		}
 		rows = append(rows, row)
 	}
-	if len(rows) > 0 {
-		if err := w.DB.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
-			return fmt.Errorf("save packages: %w", err)
+	// Replace the prior row set atomically: a failed insert after the
+	// delete would otherwise leave the repository with zero packages
+	// until the next successful scan.
+	if err := w.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("repository_id = ?", scan.RepositoryID).Delete(&db.Package{}).Error; err != nil {
+			return fmt.Errorf("delete old packages: %w", err)
 		}
+		if len(rows) > 0 {
+			if err := tx.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
+				return fmt.Errorf("save packages: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	emit(Event{Kind: KindText, Text: fmt.Sprintf("saved %d package(s)", len(rows))})
 	return nil
@@ -177,9 +186,6 @@ func (w *Worker) parseAdvisoriesOutput(scan *db.Scan, report string, emit func(E
 	if err := json.Unmarshal([]byte(report), &result); err != nil {
 		return fmt.Errorf("parse advisories: %w", err)
 	}
-	if err := w.DB.Where("repository_id = ?", scan.RepositoryID).Delete(&db.Advisory{}).Error; err != nil {
-		return fmt.Errorf("delete old advisories: %w", err)
-	}
 	rows := make([]db.Advisory, 0, len(result.Advisories))
 	for _, a := range result.Advisories {
 		row := db.Advisory{
@@ -201,10 +207,20 @@ func (w *Worker) parseAdvisoriesOutput(scan *db.Scan, report string, emit func(E
 		}
 		rows = append(rows, row)
 	}
-	if len(rows) > 0 {
-		if err := w.DB.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
-			return fmt.Errorf("save advisories: %w", err)
+	// Replace the prior row set atomically so a failed insert can't leave
+	// the repository with zero advisories.
+	if err := w.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("repository_id = ?", scan.RepositoryID).Delete(&db.Advisory{}).Error; err != nil {
+			return fmt.Errorf("delete old advisories: %w", err)
 		}
+		if len(rows) > 0 {
+			if err := tx.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
+				return fmt.Errorf("save advisories: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	emit(Event{Kind: KindText, Text: fmt.Sprintf("saved %d advisor(ies)", len(rows))})
 	return nil
@@ -227,9 +243,6 @@ func (w *Worker) parseDependentsOutput(scan *db.Scan, report string, emit func(E
 	if err := json.Unmarshal([]byte(report), &result); err != nil {
 		return fmt.Errorf("parse dependents: %w", err)
 	}
-	if err := w.DB.Where("repository_id = ?", scan.RepositoryID).Delete(&db.Dependent{}).Error; err != nil {
-		return fmt.Errorf("delete old dependents: %w", err)
-	}
 	rows := make([]db.Dependent, 0, len(result.Dependents))
 	for _, d := range result.Dependents {
 		rows = append(rows, db.Dependent{
@@ -244,10 +257,20 @@ func (w *Worker) parseDependentsOutput(scan *db.Scan, report string, emit func(E
 			LatestVersion:  d.LatestVersion,
 		})
 	}
-	if len(rows) > 0 {
-		if err := w.DB.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
-			return fmt.Errorf("save dependents: %w", err)
+	// Replace the prior row set atomically so a failed insert can't leave
+	// the repository with zero dependents.
+	if err := w.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("repository_id = ?", scan.RepositoryID).Delete(&db.Dependent{}).Error; err != nil {
+			return fmt.Errorf("delete old dependents: %w", err)
 		}
+		if len(rows) > 0 {
+			if err := tx.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
+				return fmt.Errorf("save dependents: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	emit(Event{Kind: KindText, Text: fmt.Sprintf("saved %d dependent(s)", len(rows))})
 	return nil
@@ -264,9 +287,6 @@ func (w *Worker) parseDependenciesOutput(scan *db.Scan, report string, emit func
 		return fmt.Errorf("parse dependencies: %w", err)
 	}
 	w.resolveMavenDependencyRequirements(scan, result.Dependencies, emit)
-	if err := w.DB.Where("repository_id = ?", scan.RepositoryID).Delete(&db.Dependency{}).Error; err != nil {
-		return fmt.Errorf("delete old dependencies: %w", err)
-	}
 	rows := make([]db.Dependency, 0, len(result.Dependencies))
 	for _, d := range result.Dependencies {
 		depType := d.Type
@@ -287,10 +307,20 @@ func (w *Worker) parseDependenciesOutput(scan *db.Scan, report string, emit func
 			ManifestKind:          d.ManifestKind,
 		})
 	}
-	if len(rows) > 0 {
-		if err := w.DB.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
-			return fmt.Errorf("save dependencies: %w", err)
+	// Replace the prior row set atomically so a failed insert can't leave
+	// the repository with zero dependencies.
+	if err := w.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("repository_id = ?", scan.RepositoryID).Delete(&db.Dependency{}).Error; err != nil {
+			return fmt.Errorf("delete old dependencies: %w", err)
 		}
+		if len(rows) > 0 {
+			if err := tx.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
+				return fmt.Errorf("save dependencies: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	emit(Event{Kind: KindText, Text: fmt.Sprintf("saved %d dependenc(ies)", len(rows))})
 	return nil
@@ -486,9 +516,6 @@ func (w *Worker) parseSubprojectsOutput(scan *db.Scan, report string, emit func(
 	if err := json.Unmarshal([]byte(report), &result); err != nil {
 		return fmt.Errorf("parse subprojects: %w", err)
 	}
-	if err := w.DB.Where("repository_id = ?", scan.RepositoryID).Delete(&db.Subproject{}).Error; err != nil {
-		return fmt.Errorf("delete old subprojects: %w", err)
-	}
 	rows := make([]db.Subproject, 0, len(result.Subprojects))
 	for _, sp := range result.Subprojects {
 		path := strings.Trim(sp.Path, "/ \t\n")
@@ -503,10 +530,20 @@ func (w *Worker) parseSubprojectsOutput(scan *db.Scan, report string, emit func(
 			Description:  sp.Description,
 		})
 	}
-	if len(rows) > 0 {
-		if err := w.DB.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
-			return fmt.Errorf("save subprojects: %w", err)
+	// Replace the prior row set atomically so a failed insert can't leave
+	// the repository with zero subprojects.
+	if err := w.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("repository_id = ?", scan.RepositoryID).Delete(&db.Subproject{}).Error; err != nil {
+			return fmt.Errorf("delete old subprojects: %w", err)
 		}
+		if len(rows) > 0 {
+			if err := tx.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
+				return fmt.Errorf("save subprojects: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	emit(Event{Kind: KindText, Text: fmt.Sprintf("saved %d subproject(s)", len(rows))})
 	return nil
