@@ -30,7 +30,7 @@ RUN GOBIN=/out CGO_ENABLED=1 go install github.com/andrew/VID/cmd/vid@v0.1.0
 
 FROM rust:1.96-alpine@sha256:f87aa870663e2b57ec8c69de82c7eedf7383bee987eef7612c0359635eaadb41 AS zizmor-build
 RUN apk add --no-cache build-base linux-headers
-RUN cargo install --locked --root /out zizmor@1.24.1
+RUN cargo install --locked --root /out zizmor@1.26.1
 
 FROM python:3.15.0b2-alpine@sha256:05458e2cf3a3b7a158d3c2e11940de557c626c064f41311f874a2c08ede01074
 RUN apk add --no-cache git ca-certificates bash nodejs coreutils && \

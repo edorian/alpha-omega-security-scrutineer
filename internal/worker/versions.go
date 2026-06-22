@@ -66,7 +66,7 @@ func QueryRunnerToolVersions(ctx context.Context, image string) RunnerToolVersio
 }
 
 // versionRe matches the first dotted-numeric version token in a string, so
-// "zizmor 1.24.1" and "2.1.123 (Claude Code)" both reduce to the bare number.
+// "zizmor 1.26.1" and "2.1.123 (Claude Code)" both reduce to the bare number.
 var versionRe = regexp.MustCompile(`\d+\.\d+[\w.\-+]*`)
 
 func parseToolVersions(out string) RunnerToolVersions {

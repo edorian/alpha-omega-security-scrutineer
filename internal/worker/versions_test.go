@@ -3,12 +3,12 @@ package worker
 import "testing"
 
 func TestParseToolVersions(t *testing.T) {
-	out := "zizmor=zizmor 1.24.1\n" +
+	out := "zizmor=zizmor 1.26.1\n" +
 		"semgrep=1.167.0\n" +
 		"claude=2.1.123 (Claude Code)\n"
 	got := parseToolVersions(out)
-	if got.Zizmor != "1.24.1" {
-		t.Errorf("Zizmor = %q, want 1.24.1", got.Zizmor)
+	if got.Zizmor != "1.26.1" {
+		t.Errorf("Zizmor = %q, want 1.26.1", got.Zizmor)
 	}
 	if got.Semgrep != "1.167.0" {
 		t.Errorf("Semgrep = %q, want 1.167.0", got.Semgrep)
