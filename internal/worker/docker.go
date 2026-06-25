@@ -1,7 +1,9 @@
 // Package worker provides a DockerRunner that executes claude in an ephemeral
-// container. Used when docker is available on the host; falls back to
-// LocalClaude otherwise. The scrutineer process runs on the host (not
-// containerised) and calls docker directly -- no socket mounting needed (T12).
+// container via a container runtime (docker or podman). Used when a runtime is
+// available on the host; falls back to LocalClaude otherwise. The scrutineer
+// process runs on the host (not containerised) and calls the runtime directly
+// -- no socket mounting needed (T12). Rootless podman is supported, which keeps
+// runtime access non-root-equivalent (see threatmodel.md T12).
 package worker
 
 import (
@@ -19,8 +21,9 @@ import (
 const DefaultRunnerImage = "ghcr.io/alpha-omega-security/scrutineer-runner:latest"
 
 // DockerRunner launches claude inside an ephemeral container with the scan
-// workspace (clone + staged skill + output file) mounted at /work. It
-// implements SkillRunner.
+// workspace (clone + staged skill + output file) mounted at /work. It drives
+// either docker or podman (selected via the Runtime field) and implements
+// SkillRunner.
 type DockerRunner struct {
 	Image            string
 	Effort           string
@@ -35,19 +38,43 @@ type DockerRunner struct {
 	ProfilesDir string
 	// Hardened toggles the strict sandbox: rootfs is mounted read-only,
 	// no-new-privileges is set on the container, and the runner creates
-	// a per-scan --internal docker network so the only egress path is
+	// a per-scan --internal network so the only egress path is
 	// the host proxy and concurrent scans cannot reach each other.
 	// Profile images must work with a read-only rootfs when this is
 	// enabled (writable paths beyond /work and /tmp will fail).
 	Hardened bool
+	// HardenedRootlessRuntime applies the non-network half of --hardened -- a
+	// read-only rootfs, no-new-privileges, and the post-clone workspace cap --
+	// WITHOUT the per-scan --internal network. Those are all independent of the
+	// network, so unlike full --hardened they work under rootless podman (whose
+	// --internal network cannot route to the host egress proxy; see
+	// docs/podman.md). The always-on baseline (--cap-drop ALL, non-root --user,
+	// the /tmp tmpfs) applies regardless of this field. --hardened already
+	// implies all of these, so this is the rootless stand-in for them, not an
+	// addition on top (setting both is harmless). The read-only rootfs can break
+	// custom profile images that write outside /work and /tmp.
+	HardenedRootlessRuntime bool
+	// Runtime selects the OCI engine (docker or podman) and carries the
+	// rootless flag that gates --userns=keep-id. The zero value is docker, so
+	// a bare DockerRunner{} keeps shelling out to "docker".
+	Runtime ContainerRuntime
+	// SELinuxRelabel, when true, appends the ":z" relabel option to every host
+	// bind mount (/work, /claude-config, /src) so the container can access them
+	// on an SELinux-enabled host. Without it, container_t is denied the host
+	// labels and every scan fails with EACCES on the clone and output. Resolved
+	// once at startup from the --selinux switch (auto/on/off); see bindMount for
+	// the ":z" vs ":Z" rationale and ResolveSELinuxRelabel for the gating. The
+	// zero value is false, so docker on a non-SELinux host stays byte-for-byte
+	// unchanged.
+	SELinuxRelabel bool
 }
 
 // hardenedNetworkPrefix is the common prefix used to name the per-scan
-// --internal docker networks. SweepOrphanHardenedNetworks relies on it
+// --internal networks. SweepOrphanHardenedNetworks relies on it
 // to identify residue from crashed scrutineer processes.
 const hardenedNetworkPrefix = "scrutineer-hardened-"
 
-// hardenedNetworkName returns the docker network name dedicated to a
+// hardenedNetworkName returns the network name dedicated to a
 // single hardened scan. Uniqueness per scan is the whole isolation
 // property: two scans must never produce the same name.
 func hardenedNetworkName(scanID uint) string {
@@ -76,13 +103,15 @@ func redactURLUserinfo(raw string) string {
 	return u.String()
 }
 
-// HardenedWorkspaceCapBytes caps the per-scan workspace footprint that
-// hardened mode tolerates after clone completes. This is a post-clone
-// check, not a clone-time bound: a clone that already exceeds disk
-// capacity fails earlier on its own, so this cap is what hardened mode
-// will agree to scan, not a guarantee against disk fill during clone
-// (use OS-level disk quotas for that). 2 GiB leaves room for genuinely
-// large legitimate repos.
+// HardenedWorkspaceCapBytes caps the per-scan workspace footprint that the
+// hardening modes (--hardened and --hardened-rootless-runtime) tolerate after
+// clone completes. This is a post-clone check, not a clone-time bound: a clone
+// that already exceeds disk capacity fails earlier on its own, so this cap is
+// what hardening will agree to scan, not a guarantee against disk fill during
+// clone (use OS-level disk quotas for that). It is a pure host-side size check
+// with no container/network/rootless dependency, which is why it applies under
+// --hardened-rootless-runtime too. 2 GiB leaves room for genuinely large
+// legitimate repos.
 const HardenedWorkspaceCapBytes int64 = 2 << 30
 
 // RunSkill runs a skill inside an ephemeral container. The whole workspace
@@ -118,19 +147,11 @@ func (d DockerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Event
 	}
 	d.injectProfileGuide(profile, absWork, emit)
 
-	var perScanNetwork string
-	if d.Hardened {
-		if sj.ScanID == 0 {
-			return SkillResult{Commit: commit, Profile: profile}, fmt.Errorf("hardened mode requires SkillJob.ScanID; refusing to share %s0 across scans", hardenedNetworkPrefix)
-		}
-		perScanNetwork = hardenedNetworkName(sj.ScanID)
-		if err := EnsureHardenedNetwork(perScanNetwork); err != nil {
-			return SkillResult{Commit: commit, Profile: profile}, fmt.Errorf("create hardened network: %w", err)
-		}
-		defer func() {
-			_ = exec.Command("docker", "network", "rm", "--", perScanNetwork).Run()
-		}()
+	hnet, cleanupNetwork, err := d.setupHardenedNetwork(sj, image)
+	if err != nil {
+		return SkillResult{Commit: commit, Profile: profile}, err
 	}
+	defer cleanupNetwork()
 
 	var outPath string
 	if sj.OutputFile != "" {
@@ -138,7 +159,7 @@ func (d DockerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Event
 		_ = os.Remove(outPath)
 	}
 
-	// docker treats a non-absolute -v source as a named volume (which
+	// the runtime treats a non-absolute -v source as a named volume (which
 	// rejects '/'), so the config dir must be absolutised like absWork.
 	var absConfig string
 	if sj.ClaudeConfigDir != "" {
@@ -147,9 +168,9 @@ func (d DockerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Event
 			return SkillResult{Commit: commit, Profile: profile}, fmt.Errorf("create claude config dir: %w", err)
 		}
 	}
-	dockerBase := d.buildDockerArgs(absWork, image, perScanNetwork, absConfig)
+	dockerBase := d.buildDockerArgs(absWork, image, hnet, absConfig)
 
-	logLine := "$ docker run --rm " + image + " <skill:" + sj.Name + ">"
+	logLine := "$ " + d.Runtime.bin() + " run --rm " + image + " <skill:" + sj.Name + ">"
 	if d.AnthropicBaseURL != "" {
 		logLine += " [ANTHROPIC_BASE_URL=" + redactURLUserinfo(d.AnthropicBaseURL) + "]"
 	}
@@ -167,7 +188,7 @@ func (d DockerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Event
 	if waitErr != nil && sj.ResumeSessionID != "" && sessionID == "" && planLimitText == "" {
 		if sj.ResumePrompt != "" {
 			emit(Event{Kind: KindText, Text: "resume of session " + sj.ResumeSessionID + " failed; " + resumePromptNoFreshFallbackText})
-			return SkillResult{Commit: commit, Profile: profile}, fmt.Errorf("docker exited: %w", waitErr)
+			return SkillResult{Commit: commit, Profile: profile}, fmt.Errorf("%s exited: %w", d.Runtime.bin(), waitErr)
 		}
 		// The resume produced no session event, so claude could not load the
 		// saved conversation (gone from the mounted store). Restart fresh in
@@ -190,7 +211,7 @@ func (d DockerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Event
 		if planLimitText != "" {
 			return res, &ClaudePlanLimitError{Detail: planLimitText}
 		}
-		return res, fmt.Errorf("docker exited: %w", waitErr)
+		return res, fmt.Errorf("%s exited: %w", d.Runtime.bin(), waitErr)
 	}
 	return res, nil
 }
@@ -204,7 +225,7 @@ func (d DockerRunner) runDockerOnce(ctx context.Context, dockerBase []string, sj
 	claudeArgs := append([]string{"claude"}, buildClaudeArgs(sj, d.Effort, d.MaxTurns)...)
 	dockerArgs := append(append([]string{}, dockerBase...), claudeArgs...)
 
-	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	cmd := exec.CommandContext(ctx, d.Runtime.bin(), dockerArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = os.Environ()
 
@@ -239,15 +260,15 @@ func (d DockerRunner) runDockerOnce(ctx context.Context, dockerBase []string, sj
 // the in-container command. Split out of RunSkill to keep its cognitive
 // complexity manageable as new toggles (hardened mode, proxy, profiles)
 // accumulate.
-func (d DockerRunner) buildDockerArgs(absWork, image, perScanNetwork, claudeConfigDir string) []string {
+func (d DockerRunner) buildDockerArgs(absWork, image string, hnet hardenedNet, claudeConfigDir string) []string {
 	gwTarget := "host-gateway"
 	if d.Hardened {
-		// Each --internal network has its own subnet and gateway, so the
-		// IPv4 must be probed against the per-scan network the runner
-		// will actually attach to. An empty probe result falls through
-		// to docker's literal host-gateway alias.
-		if ip := ResolveHostGatewayIPv4(image, perScanNetwork); ip != "" {
-			gwTarget = ip
+		// setupHardenedNetwork resolved the gateway once against this per-scan
+		// network and passed it in (no re-probe here, so this stays a pure
+		// function). An empty result falls through to the literal host-gateway
+		// alias.
+		if hnet.gatewayIP != "" {
+			gwTarget = hnet.gatewayIP
 		}
 	} else if d.HostGatewayIP != "" {
 		gwTarget = d.HostGatewayIP
@@ -269,9 +290,16 @@ func (d DockerRunner) buildDockerArgs(absWork, image, perScanNetwork, claudeConf
 		"-e", "DISABLE_NON_ESSENTIAL_MODEL_CALLS=1",
 		"-e", "SEMGREP_SEND_METRICS=off",
 		"--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
-		"-v", absWork + ":/work",
+		"-v", bindMount(absWork, "/work", d.SELinuxRelabel),
 		"-w", "/work",
 		"--add-host", HostGatewayAlias + ":" + gwTarget,
+	}
+	if d.Runtime.needsKeepID() {
+		// Rootless podman remaps --user uid:gid through /etc/subuid, so writes
+		// to the bind mounts (/work output and the /claude-config resume store)
+		// would land owned by a subordinate uid. keep-id maps the container
+		// user back to the invoking host uid so output stays host-owned.
+		args = append(args, "--userns=keep-id")
 	}
 	if claudeConfigDir != "" {
 		// Persist the resumable claude session store outside the container.
@@ -280,20 +308,32 @@ func (d DockerRunner) buildDockerArgs(absWork, image, perScanNetwork, claudeConf
 		// mount stays writable even under hardened mode's --read-only
 		// rootfs, so resume works there too.
 		args = append(args,
-			"-v", claudeConfigDir+":/claude-config",
+			"-v", bindMount(claudeConfigDir, "/claude-config", d.SELinuxRelabel),
 			"-e", "CLAUDE_CONFIG_DIR=/claude-config",
 		)
 	}
-	if d.Hardened {
+	if d.Hardened || d.HardenedRootlessRuntime {
 		// Read-only rootfs + no-new-privileges close the residual paths a
 		// hostile skill could use to escalate inside the container. /work
-		// stays writable (skill output) and /tmp is the tmpfs declared
-		// above with HOME=/tmp redirecting claude session storage.
+		// stays writable (skill output) and /tmp is the tmpfs declared above
+		// with HOME=/tmp redirecting claude session storage. These are pure
+		// container options with no network dependency, so --hardened-rootless-
+		// runtime applies them under the default network -- unlike the
+		// --internal network below, which rootless podman can't route to the
+		// host proxy. --cap-drop ALL and the non-root --user are already set
+		// unconditionally above, in every mode.
 		args = append(args,
 			"--read-only",
 			"--security-opt", "no-new-privileges",
-			"--network", perScanNetwork,
 		)
+	}
+	if d.Hardened {
+		// The per-scan --internal network is the egress-enforcement half of
+		// --hardened, kept separate from the container hardening above because
+		// it does not work under rootless podman (the startup verification
+		// fails closed when it can't reach the host proxy here; see
+		// docs/podman.md). --hardened-rootless-runtime deliberately omits it.
+		args = append(args, "--network", hnet.name)
 	}
 	if d.ProxyURL != "" {
 		args = append(args,
@@ -342,12 +382,12 @@ func (d DockerRunner) resolveProfile(ctx context.Context, requested, src, subPat
 		if subPath != "" {
 			srcDir = filepath.Join(src, subPath)
 		}
-		p = DetectProfile(ctx, defaultImg, srcDir)
+		p = DetectProfile(ctx, d.Runtime, defaultImg, srcDir, d.SELinuxRelabel)
 		if p.IsDefault() {
 			return "", defaultImg
 		}
 	}
-	img, err := p.EnsureImage(ctx, d.ProfilesDir, defaultImg, emit)
+	img, err := p.EnsureImage(ctx, d.Runtime, d.ProfilesDir, defaultImg, emit)
 	if err != nil {
 		emit(Event{Kind: KindText, Text: "profile: " + p.Name + " build failed, using default: " + err.Error()})
 		return "", defaultImg
@@ -362,19 +402,20 @@ func (d DockerRunner) resolveProfile(ctx context.Context, requested, src, subPat
 // so a plain 0644 keeps it readable by the agent without surprises.
 const profileGuideFileMode os.FileMode = 0o644
 
-// checkHardenedWorkspace returns an error when hardened mode is on
-// and the cloned workspace exceeds HardenedWorkspaceCapBytes. A no-op
-// outside hardened mode so the cap doesn't apply to default scans.
+// checkHardenedWorkspace returns an error when a hardening mode is on and the
+// cloned workspace exceeds HardenedWorkspaceCapBytes. It applies under both
+// --hardened and --hardened-rootless-runtime (the cap is a host-side size check,
+// not network-coupled), and is a no-op for plain default scans.
 func (d DockerRunner) checkHardenedWorkspace(workRoot string) error {
-	if !d.Hardened {
+	if !d.Hardened && !d.HardenedRootlessRuntime {
 		return nil
 	}
 	size, err := dirSize(workRoot)
 	if err != nil {
-		return fmt.Errorf("hardened workspace size check: %w", err)
+		return fmt.Errorf("workspace size check: %w", err)
 	}
 	if size > HardenedWorkspaceCapBytes {
-		return fmt.Errorf("hardened workspace exceeds %d bytes after clone (got %d)", HardenedWorkspaceCapBytes, size)
+		return fmt.Errorf("workspace exceeds the %d-byte hardening cap after clone (got %d)", HardenedWorkspaceCapBytes, size)
 	}
 	return nil
 }
@@ -423,28 +464,22 @@ func (d DockerRunner) profileGuidePath(profile string) string {
 	return abs
 }
 
-// DockerAvailable checks if docker is in PATH and the daemon is reachable.
-func DockerAvailable() bool {
-	out, err := exec.Command("docker", "info", "--format", "{{.ServerVersion}}").Output()
-	return err == nil && len(out) > 0
-}
-
-// ResolveHostGatewayIPv4 returns the IPv4 address that Docker's
+// ResolveHostGatewayIPv4 returns the IPv4 address that the runtime's
 // host-gateway maps to on the given network. An empty network probes
 // the default bridge, which is what scrutineer uses outside hardened
 // mode. The hardened path passes its --internal network name so the
 // resolved gateway matches the network the runner actually attaches to.
-// Docker adds both IPv4 and IPv6 /etc/hosts entries for host-gateway;
-// tools that prefer IPv6 (like Node's fetch) fail when the server only
-// listens on 127.0.0.1. Using the explicit IPv4 address avoids the
-// dual-stack ambiguity.
-func ResolveHostGatewayIPv4(image, network string) string {
+// Both docker and podman add IPv4 and IPv6 /etc/hosts entries for
+// host-gateway; tools that prefer IPv6 (like Node's fetch) fail when the
+// server only listens on 127.0.0.1. Using the explicit IPv4 address avoids
+// the dual-stack ambiguity.
+func ResolveHostGatewayIPv4(rt ContainerRuntime, image, network string) string {
 	args := []string{"run", "--rm", "--add-host", "hgw:host-gateway"}
 	if network != "" {
 		args = append(args, "--network", network)
 	}
 	args = append(args, "--entrypoint", "grep", "--", image, "hgw", "/etc/hosts")
-	out, err := exec.Command("docker", args...).Output()
+	out, err := exec.Command(rt.bin(), args...).Output()
 	if err != nil {
 		return ""
 	}
@@ -486,15 +521,149 @@ func dirSize(root string) (int64, error) {
 // path out. The function is idempotent: a retry of a scan that crashed
 // after the network was created (but before the post-scan rm ran) will
 // reuse the existing network instead of failing.
-func EnsureHardenedNetwork(name string) error {
-	if out, err := exec.Command("docker", "network", "inspect", "--", name).Output(); err == nil && len(out) > 0 {
+func EnsureHardenedNetwork(rt ContainerRuntime, name string) error {
+	if out, err := exec.Command(rt.bin(), "network", "inspect", "--", name).Output(); err == nil && len(out) > 0 {
 		return nil
 	}
-	cmd := exec.Command("docker", "network", "create", "--internal", "--", name)
+	cmd := exec.Command(rt.bin(), "network", "create", "--internal", "--", name)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("docker network create --internal %s: %w: %s", name, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%s network create --internal %s: %w: %s", rt.bin(), name, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// hardenedNet bundles a per-scan --internal network name with the host-gateway
+// IPv4 resolved against it. setupHardenedNetwork resolves the gateway once and
+// threads it through both verifyHardenedNetwork and buildDockerArgs, so a
+// hardened scan probes for it a single time instead of once per consumer. The
+// zero value (both fields "") is the non-hardened case.
+type hardenedNet struct {
+	name      string // per-scan --internal network name
+	gatewayIP string // host-gateway IPv4 for that network; "" if unresolved
+}
+
+// setupHardenedNetwork creates the per-scan --internal network for a hardened
+// scan, resolves its host-gateway once, and (on rootless podman) verifies it
+// actually isolates egress before the scan runs (fail closed). It returns the
+// network + resolved gateway and a cleanup func the caller must defer to remove
+// the network. Outside hardened mode it is a no-op with a zero hardenedNet and a
+// no-op cleanup. On any error the network it created (if any) is already torn
+// down, so the returned cleanup is always safe to defer.
+func (d DockerRunner) setupHardenedNetwork(sj SkillJob, image string) (hardenedNet, func(), error) {
+	noop := func() {}
+	if !d.Hardened {
+		return hardenedNet{}, noop, nil
+	}
+	if sj.ScanID == 0 {
+		return hardenedNet{}, noop, fmt.Errorf("hardened mode requires SkillJob.ScanID; refusing to share %s0 across scans", hardenedNetworkPrefix)
+	}
+	network := hardenedNetworkName(sj.ScanID)
+	if err := EnsureHardenedNetwork(d.Runtime, network); err != nil {
+		return hardenedNet{}, noop, fmt.Errorf("create hardened network: %w", err)
+	}
+	cleanup := func() { _ = exec.Command(d.Runtime.bin(), "network", "rm", "--", network).Run() }
+	// Resolve the host-gateway once against the network just created; reused by
+	// both the verification probe and the real run (an empty result falls through
+	// to the literal host-gateway alias downstream).
+	hn := hardenedNet{name: network, gatewayIP: ResolveHostGatewayIPv4(d.Runtime, image, network)}
+	// docker's bridge --internal is trusted, and so is rootful podman's (netavark
+	// + a bridge in the host netns, gateway on the host -- docker's model). Only
+	// rootless podman needs per-scan proof; see needsHardenedNetVerify.
+	if d.Runtime.needsHardenedNetVerify() {
+		if err := d.verifyHardenedNetwork(hn, image); err != nil {
+			cleanup()
+			return hardenedNet{}, noop, fmt.Errorf("hardened network verification: %w", err)
+		}
+	}
+	return hn, cleanup, nil
+}
+
+// verifyHardenedNetwork fails closed when the per-scan --internal network does
+// not deliver the isolation --hardened promises. It is used on podman, where
+// rootless network backends (pasta, slirp4netns, netavark) implement --internal
+// differently enough from docker's bridge driver that the property must be
+// proven, not assumed. Two short-lived probes run on the network:
+//
+//	(a) a container with no proxy env must FAIL to reach a routable public IP
+//	    (a literal address, so a pass means no IP-level egress rather than
+//	    merely blocked DNS); and
+//	(b) a container must still reach the host egress proxy through the gateway.
+//
+// Any probe that cannot even run (image won't start, curl missing) is treated
+// as a failure: the runner must never fall back to a weaker sandbox silently.
+func (d DockerRunner) verifyHardenedNetwork(hn hardenedNet, image string) error {
+	network := hn.name
+	gwTarget := "host-gateway"
+	if hn.gatewayIP != "" {
+		gwTarget = hn.gatewayIP
+	}
+	port, err := proxyPortFromURL(d.ProxyURL)
+	if err != nil {
+		return fmt.Errorf("parse proxy url: %w", err)
+	}
+
+	out, err := exec.Command(d.Runtime.bin(), hardenedEgressBlockArgs(network, image)...).CombinedOutput()
+	s := strings.TrimSpace(string(out))
+	if err != nil {
+		return fmt.Errorf("egress-block probe could not run on network %q: %w: %s", network, err, s)
+	}
+	if strings.Contains(s, "NOCURL") {
+		return fmt.Errorf("runner image %q lacks curl, which hardened verification needs", image)
+	}
+	if !strings.Contains(s, "BLOCKED") {
+		return fmt.Errorf("internal network %q did not block external egress (probe output: %q); refusing to run a weaker sandbox than --hardened promises", network, s)
+	}
+
+	out, err = exec.Command(d.Runtime.bin(), hardenedProxyReachArgs(network, gwTarget, port, image)...).CombinedOutput()
+	s = strings.TrimSpace(string(out))
+	if err != nil {
+		return fmt.Errorf("proxy-reach probe could not run on network %q: %w: %s", network, err, s)
+	}
+	if !strings.Contains(s, "REACHED") {
+		return fmt.Errorf("internal network %q cannot reach the host egress proxy at %s:%s (probe output: %q); the only egress path is broken", network, gwTarget, port, s)
+	}
+	return nil
+}
+
+// hardenedEgressBlockArgs builds the `run` args for probe (a): a container on
+// the per-scan --internal network, no proxy env, that must fail to reach a
+// routable public IP. A literal IP avoids a false pass from blocked DNS. curl
+// absence is reported as NOCURL so the caller can fail closed rather than read
+// the curl-not-found exit as "egress blocked".
+func hardenedEgressBlockArgs(network, image string) []string {
+	const script = `command -v curl >/dev/null 2>&1 || { echo NOCURL; exit 0; }
+curl -s -m 5 -o /dev/null http://1.1.1.1 && echo REACHED || echo BLOCKED`
+	return []string{
+		"run", "--rm", "--cap-drop", "ALL", "--network", network,
+		"--entrypoint", "sh", "--", image, "-c", script,
+	}
+}
+
+// hardenedProxyReachArgs builds the `run` args for probe (b): a container on the
+// per-scan --internal network, with the host-gateway alias wired exactly as the
+// real run wires it, that must reach the host egress proxy. curl exit 0 (the
+// proxy answers, e.g. 407 without auth) means the TCP path to the host is open.
+func hardenedProxyReachArgs(network, gatewayIP, proxyPort, image string) []string {
+	target := "http://" + HostGatewayAlias + ":" + proxyPort + "/"
+	script := "curl -s -m 5 -o /dev/null " + target + " && echo REACHED || echo UNREACHABLE"
+	return []string{
+		"run", "--rm", "--cap-drop", "ALL", "--network", network,
+		"--add-host", HostGatewayAlias + ":" + gatewayIP,
+		"--entrypoint", "sh", "--", image, "-c", script,
+	}
+}
+
+// proxyPortFromURL extracts the port from a proxy URL of the shape ProxyURL
+// produces (http://user:tok@host.docker.internal:PORT).
+func proxyPortFromURL(proxyURL string) (string, error) {
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return "", err
+	}
+	if u.Port() == "" {
+		return "", fmt.Errorf("no port in proxy url %q", proxyURL)
+	}
+	return u.Port(), nil
 }
 
 // SweepOrphanHardenedNetworks removes per-scan hardened docker networks
@@ -504,16 +673,16 @@ func EnsureHardenedNetwork(name string) error {
 // scrutineer instance is safe from this sweep. Returns the number of
 // networks actually removed; rm failures are intentionally swallowed
 // since a busy network is exactly what we want to leave alone.
-func SweepOrphanHardenedNetworks() (int, error) {
-	out, err := exec.Command("docker", "network", "ls",
+func SweepOrphanHardenedNetworks(rt ContainerRuntime) (int, error) {
+	out, err := exec.Command(rt.bin(), "network", "ls",
 		"--filter", "name="+hardenedNetworkPrefix,
 		"--format", "{{.Name}}").Output()
 	if err != nil {
-		return 0, fmt.Errorf("docker network ls: %w", err)
+		return 0, fmt.Errorf("%s network ls: %w", rt.bin(), err)
 	}
 	removed := 0
 	for _, n := range parseHardenedNetworkNames(out) {
-		if err := exec.Command("docker", "network", "rm", "--", n).Run(); err == nil {
+		if err := exec.Command(rt.bin(), "network", "rm", "--", n).Run(); err == nil {
 			removed++
 		}
 	}

@@ -30,16 +30,33 @@ type Config struct {
 	Skills       []string `yaml:"skills"`
 	SkillsRepo   string   `yaml:"skills_repo"`
 	NoDocker     *bool    `yaml:"no_docker"`
-	// Hardened enforces the strictest sandbox mode: docker is required (no
-	// --no-docker fallback), egress is restricted to *.anthropic.com plus
-	// host.docker.internal, the container rootfs is read-only, and the
-	// runner attaches to an internal docker network whose only route out
-	// is scrutineer's allowlisting proxy. egress_allow is ignored under
-	// hardened mode; the operator must drop hardened to widen it.
-	Hardened    *bool  `yaml:"hardened"`
-	RunnerImage string `yaml:"runner_image"`
-	ProfilesDir string `yaml:"profiles_dir"`
-	// EgressAllow extends the docker runner's egress proxy allowlist with
+	// Runtime selects the container engine: "docker" (default) or "podman".
+	// Empty leaves the built-in default (docker). Rootless podman is detected
+	// automatically and gets --userns=keep-id so bind-mount output stays
+	// host-owned. There is no auto-detection: a podman-only host must set this
+	// (or pass --runtime podman) explicitly.
+	Runtime string `yaml:"runtime"`
+	// SELinux controls bind-mount relabeling for the container runner: "auto"
+	// (default/empty -- relabel only when SELinux is detected on the host), "on"
+	// (always), or "off" (never). On an SELinux-enabled host the runner must
+	// relabel its bind mounts (":z") or the container cannot read the clone or
+	// write its output. Non-SELinux hosts are unaffected. See docs/podman.md.
+	SELinux string `yaml:"selinux"`
+	// Hardened enforces the strictest sandbox mode: a container runtime is
+	// required (no --no-docker fallback), egress is restricted to
+	// *.anthropic.com plus host.docker.internal, the container rootfs is
+	// read-only, and the runner attaches to an internal network whose only
+	// route out is scrutineer's allowlisting proxy. egress_allow is ignored
+	// under hardened mode; the operator must drop hardened to widen it.
+	Hardened *bool `yaml:"hardened"`
+	// HardenedRootlessRuntime applies the non-network half of hardened mode
+	// (read-only rootfs + no-new-privileges + the 2 GiB post-clone workspace cap)
+	// without the per-scan --internal network, so it works under rootless podman
+	// where full --hardened does not. See docs/podman.md.
+	HardenedRootlessRuntime *bool  `yaml:"hardened_rootless_runtime"`
+	RunnerImage             string `yaml:"runner_image"`
+	ProfilesDir             string `yaml:"profiles_dir"`
+	// EgressAllow extends the container runner's egress proxy allowlist with
 	// extra hostnames. Entries are appended to worker.DefaultEgressAllow,
 	// not replacing it. "*.example.com" matches subdomains.
 	EgressAllow []string `yaml:"egress_allow"`
@@ -115,6 +132,28 @@ func ValidateClone(s string) error {
 	}
 }
 
+// ValidateRuntime returns an error when s is neither empty, "docker", nor
+// "podman". Exposed so the CLI flag can use the same rule as the YAML field.
+func ValidateRuntime(s string) error {
+	switch s {
+	case "", "docker", "podman":
+		return nil
+	default:
+		return fmt.Errorf("runtime: must be \"docker\" or \"podman\", got %q", s)
+	}
+}
+
+// ValidateSELinux returns an error when s is not one of "", "auto", "on", or
+// "off". Exposed so the CLI flag can use the same rule as the YAML field.
+func ValidateSELinux(s string) error {
+	switch s {
+	case "", "auto", "on", "off":
+		return nil
+	default:
+		return fmt.Errorf("selinux: must be \"auto\", \"on\", or \"off\", got %q", s)
+	}
+}
+
 // Model is a display-name plus the claude model id it resolves to. The
 // shape matches web.Model so main.go can pipe one into the other without
 // the two packages depending on each other.
@@ -170,6 +209,12 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if err := ValidateClone(c.Clone); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if err := ValidateRuntime(c.Runtime); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if err := ValidateSELinux(c.SELinux); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if _, err := ParseScanTimeout(c.ScanTimeout); err != nil {
