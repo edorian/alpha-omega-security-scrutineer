@@ -92,6 +92,7 @@ func writeMarkerFile(t *testing.T, dir, name string) {
 	}
 }
 
+//nolint:maintidx // exhaustive table: one case per builtinProfiles entry plus precedence/fallback edges; splitting would scatter the coverage.
 func TestMatchProfile(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -282,8 +283,29 @@ func TestMatchProfile(t *testing.T) {
 			want: "php",
 		},
 		{
-			name: "truly unknown manager falls back",
+			// rust is registered before the c-cpp fallback, so a Cargo
+			// crate that also ships a Makefile (common for -sys crates and
+			// build.rs-driven C builds) still routes to the rust profile.
+			name: "cargo wins over a c-cpp build file",
 			json: `{"package_managers":[{"name":"Cargo"}]}`,
+			setup: func(t *testing.T, dir string) {
+				writeMarkerFile(t, dir, "Makefile")
+			},
+			want: "rust",
+		},
+		{
+			name: "cargo matches rust",
+			json: `{"package_managers":[{"name":"Cargo"}]}`,
+			want: "rust",
+		},
+		{
+			name: "cargo case-insensitive",
+			json: `{"package_managers":[{"name":"cargo"}]}`,
+			want: "rust",
+		},
+		{
+			name: "truly unknown manager falls back",
+			json: `{"package_managers":[{"name":"Conan"}]}`,
 			want: "",
 		},
 		{
