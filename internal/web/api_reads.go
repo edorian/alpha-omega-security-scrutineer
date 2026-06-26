@@ -246,6 +246,12 @@ func (s *Server) apiListFindings(w http.ResponseWriter, r *http.Request) {
 	if skill := r.URL.Query().Get("skill"); skill != "" {
 		scans = scans.Where("skill_name = ?", skill)
 	}
+	// scan_group narrows to one parallel batch so an in-flight audit skill
+	// reads only its siblings' findings. Kept inside the repo-scoped
+	// subquery so a guessed group can never leak another repo's findings.
+	if sg := r.URL.Query().Get("scan_group"); sg != "" {
+		scans = scans.Where("scan_group = ?", sg)
+	}
 	q := s.DB.Where("scan_id IN (?)", scans).Order("id desc")
 	if sev := r.URL.Query().Get("severity"); sev != "" {
 		q = q.Where("severity = ?", sev)
@@ -313,5 +319,6 @@ func findingSummary(f db.Finding) map[string]any {
 		"resolution":    string(f.Resolution),
 		"assignee":      f.Assignee,
 		"missed_count":  f.MissedCount,
+		"dup_check":     f.DupCheck,
 	}
 }

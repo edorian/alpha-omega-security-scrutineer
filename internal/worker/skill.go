@@ -49,6 +49,11 @@ type skillContextScrutineer struct {
 	// support). Empty means the repo root. Skills that walk files honour
 	// this; skills that query external APIs ignore it.
 	ScanSubPath string `json:"scan_subpath,omitempty"`
+	// ScanGroup identifies the parallel batch this scan belongs to. An audit
+	// skill passes it to /repositories/{id}/findings?scan_group=... to read
+	// what its siblings have already filed before reporting its own.
+	// Empty when the scan was not launched as part of a batch.
+	ScanGroup string `json:"scan_group,omitempty"`
 	// ForkOrg is the GitHub organisation the fork skill stages scanned
 	// repositories into. Absent when fork_org is unconfigured.
 	ForkOrg string `json:"fork_org,omitempty"`
@@ -989,6 +994,9 @@ func stageContext(workRoot, apiBase, forkOrg, metadataDir string, scan *db.Scan,
 	}
 	if scan.SubPath != "" {
 		ctx.Scrutineer.ScanSubPath = scan.SubPath
+	}
+	if scan.ScanGroup != "" {
+		ctx.Scrutineer.ScanGroup = scan.ScanGroup
 	}
 	b, err := json.MarshalIndent(ctx, "", "  ")
 	if err != nil {

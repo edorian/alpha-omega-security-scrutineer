@@ -2669,6 +2669,38 @@ func TestRepoScanAll(t *testing.T) {
 	if f := flashFrom(t, w); !strings.Contains(f.Title, "2 queued") || !strings.Contains(f.Title, "1 already running") {
 		t.Errorf("flash = %q, want 2 queued / 1 already running", f.Title)
 	}
+	// The cohort shares one non-empty scan_group so each sibling can read the
+	// others' findings via ?scan_group= while they run in parallel.
+	if queued[0].ScanGroup == "" {
+		t.Error("scan-all cohort should carry a scan_group")
+	}
+	if queued[0].ScanGroup != queued[1].ScanGroup {
+		t.Errorf("scan-all scans should share one scan_group, got %q and %q",
+			queued[0].ScanGroup, queued[1].ScanGroup)
+	}
+}
+
+func TestRepoScan_setsScanGroup(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/foo/bar", Name: "bar"}
+	s.DB.Create(&repo)
+	deepDive := db.Skill{Name: deepDiveSkillName, Body: "b", OutputFile: "r.json",
+		OutputKind: "freeform", Version: 1, Active: true, Source: "ui"}
+	s.DB.Create(&deepDive)
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/repositories/%d/scan", repo.ID), nil)
+	req.Host = testHost
+	s.Handler().ServeHTTP(httptest.NewRecorder(), req)
+
+	var sc db.Scan
+	if err := s.DB.Where("repository_id = ?", repo.ID).First(&sc).Error; err != nil {
+		t.Fatalf("no scan created: %v", err)
+	}
+	if sc.ScanGroup == "" {
+		t.Error("a single New-scan run should still carry a scan_group")
+	}
 }
 
 func TestRepoScanAll_skillNotInstalled(t *testing.T) {

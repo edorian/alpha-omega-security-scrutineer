@@ -42,6 +42,10 @@ type scanFinding struct {
 	Reach      string `json:"reach"`
 	Rating     string `json:"rating"`
 
+	// DupCheck is the agent's one-sentence note on why this finding is
+	// distinct from the siblings already filed under the same scan_group.
+	DupCheck string `json:"dup_check"`
+
 	// Legacy fields (old schema)
 	Summary string `json:"summary"`
 	Details string `json:"details"`
@@ -88,6 +92,7 @@ func (r scanReport) toFindings(scanID, repoID uint, commit, subPath string) []db
 			PriorArt:     f.PriorArt,
 			Reach:        f.Reach,
 			Rating:       f.Rating,
+			DupCheck:     f.DupCheck,
 			References:   toReferences(f.References),
 		})
 	}
