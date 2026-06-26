@@ -4,7 +4,7 @@ description: Run `brief --json` to produce a structured overview of the reposito
 license: MIT
 compatibility: Requires the `brief` CLI (https://github.com/git-pkgs/brief) on PATH.
 metadata:
-  scrutineer.model: claude-sonnet-4-6
+  scrutineer.model: mid
   scrutineer.version: 1
   scrutineer.output_file: report.json
   scrutineer.output_kind: repo_overview
