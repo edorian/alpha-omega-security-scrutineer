@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,12 +19,32 @@ import (
 )
 
 // ProfileMarker refines profile selection beyond what brief reports.
-// Path is relative to the cloned source root; Contains, when set, must
-// also appear inside the file — used e.g. to distinguish a phpize
-// config.m4 from any unrelated autoconf file.
 type ProfileMarker struct {
-	Path     string
+	// Path is the marker location relative to the cloned source root.
+	// Its interpretation depends on Glob/Walk:
+	//   - default: an exact path, tested with os.Stat.
+	//   - Glob:    a filepath.Glob pattern (single-segment wildcards),
+	//              e.g. "*.gemspec".
+	//   - Walk:    "<root>/<basename>"; <basename> is searched for anywhere
+	//              under <root> by a depth- and count-bounded walk, e.g.
+	//              "ext/extconf.rb" finds an extconf.rb at any depth under
+	//              ext/.
+	Path string
+	// Contains, when set, must also appear inside the matched file — used
+	// e.g. to distinguish a phpize config.m4 from any unrelated autoconf
+	// file, or a gemspec that declares spec.extensions from one that merely
+	// mentions the word. Bounded by markerReadCap.
 	Contains string
+	// Glob makes Path a filepath.Glob pattern instead of an exact path.
+	// filepath.Glob expands * ? [..] within a single path segment, which
+	// covers root-level fan-outs like "*.gemspec".
+	Glob bool
+	// Walk makes Path a "<root>/<basename>" pair: <basename> (the last
+	// segment) is searched for anywhere beneath <root> (the rest) by a
+	// bounded directory walk. filepath.Glob cannot express "**", so this
+	// covers native-extension layouts like ext/<name>/extconf.rb and the
+	// deeper ext/<name>/<sub>/extconf.rb some gems use.
+	Walk bool
 }
 
 // Profile selects a per-ecosystem runner image. The default profile
@@ -85,6 +106,42 @@ var builtinProfiles = []Profile{
 		},
 	},
 	{Name: "php", Ecosystem: "Composer"},
+	{
+		// Before ruby: a gem that ships a native extension (C/C++, or Rust
+		// via rb-sys/Cargo) routes to the sanitizer-instrumented interpreter.
+		// ruby-ext is a strict SUPERSET of the ruby profile — it keeps the
+		// full Ruby-level audit and adds memory-safety coverage — so a
+		// false-positive match only costs build time, never coverage; the
+		// markers are deliberately broad for that reason. Robust detection
+		// also lets the verify skill (which re-detects rather than carrying
+		// the scan's profile) re-pick ruby-ext and actually reproduce an
+		// ASan crash, instead of landing on stock ruby and reporting the
+		// finding inconclusive.
+		//
+		// Markers (OR): the gemspec's spec.extensions is RubyGems' own
+		// definition of "has native code" and is authoritative; the bounded
+		// ext/ walks catch the conventional ext/<name>/extconf.rb (mkmf, also
+		// used by rb-sys Rust) and ext/<name>/Cargo.toml (Cargo-native gems)
+		// at any depth; the root extconf.rb covers the older single-dir style.
+		Name: "ruby-ext",
+		AnyMarkers: []ProfileMarker{
+			{Path: "*.gemspec", Glob: true, Contains: ".extensions"},
+			{Path: "ext/extconf.rb", Walk: true},
+			{Path: "ext/Cargo.toml", Walk: true},
+			{Path: "extconf.rb"},
+		},
+	},
+	{
+		// Before ruby: a Rails app (config/application.rb is the canonical
+		// boot file) also gets Brakeman, the Rails-specific SAST, on top of
+		// the ruby runtime. Like ruby-ext this is a superset of the ruby
+		// profile. Marker-only so it does not collide with ruby's Bundler
+		// ecosystem in the registry-sanity test.
+		Name: "ruby-rails",
+		Markers: []ProfileMarker{
+			{Path: "config/application.rb"},
+		},
+	},
 	{Name: "ruby", Ecosystem: "Bundler"},
 	{Name: "node", Ecosystem: "npm"},
 	{
@@ -205,14 +262,7 @@ func markersMatch(markers []ProfileMarker, srcDir string) bool {
 		return false
 	}
 	for _, m := range markers {
-		full := filepath.Join(srcDir, m.Path)
-		if m.Contains == "" {
-			if _, err := os.Stat(full); err != nil {
-				return false
-			}
-			continue
-		}
-		if !fileContains(full, m.Contains) {
+		if !markerPresent(m, srcDir) {
 			return false
 		}
 	}
@@ -230,18 +280,83 @@ func anyMarkersMatch(markers []ProfileMarker, srcDir string) bool {
 		return false
 	}
 	for _, m := range markers {
-		full := filepath.Join(srcDir, m.Path)
-		if m.Contains == "" {
-			if _, err := os.Stat(full); err == nil {
-				return true
-			}
-			continue
-		}
-		if fileContains(full, m.Contains) {
+		if markerPresent(m, srcDir) {
 			return true
 		}
 	}
 	return false
+}
+
+// markerWalkMaxDepth and markerWalkMaxFiles bound the Walk matcher so a
+// deep or hostile tree can't stall detection. The depth is generous enough
+// for real ext/ layouts (ext/<name>/<sub>/extconf.rb) while the file cap is
+// a backstop against a pathological repo.
+const (
+	markerWalkMaxDepth = 6
+	markerWalkMaxFiles = 50_000
+)
+
+// markerPresent reports whether a single marker is satisfied under srcDir,
+// dispatching on the marker's mode (exact path, Glob pattern, or bounded
+// Walk). Contains, when set, additionally requires the matched file to hold
+// the substring.
+func markerPresent(m ProfileMarker, srcDir string) bool {
+	switch {
+	case m.Glob:
+		matches, err := filepath.Glob(filepath.Join(srcDir, m.Path))
+		if err != nil {
+			return false
+		}
+		for _, f := range matches {
+			if m.Contains == "" || fileContains(f, m.Contains) {
+				return true
+			}
+		}
+		return false
+	case m.Walk:
+		return walkMarkerPresent(m, srcDir)
+	default:
+		full := filepath.Join(srcDir, m.Path)
+		if m.Contains == "" {
+			_, err := os.Stat(full)
+			return err == nil
+		}
+		return fileContains(full, m.Contains)
+	}
+}
+
+// walkMarkerPresent searches for a file named filepath.Base(m.Path) anywhere
+// under filepath.Dir(m.Path) (relative to srcDir), bounded by
+// markerWalkMaxDepth and markerWalkMaxFiles. A missing or unreadable root is
+// simply "not present" — detection never fails a scan. When Contains is set
+// the matched file must also hold the substring.
+func walkMarkerPresent(m ProfileMarker, srcDir string) bool {
+	root := filepath.Join(srcDir, filepath.Dir(m.Path))
+	target := filepath.Base(m.Path)
+	rootDepth := strings.Count(filepath.Clean(root), string(os.PathSeparator))
+	files := 0
+	found := false
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // unreadable entry: skip it, don't abort the walk
+		}
+		if d.IsDir() {
+			if strings.Count(filepath.Clean(path), string(os.PathSeparator))-rootDepth > markerWalkMaxDepth {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		files++
+		if files > markerWalkMaxFiles {
+			return fs.SkipAll
+		}
+		if d.Name() == target && (m.Contains == "" || fileContains(path, m.Contains)) {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // markerReadCap bounds Contains-substring scans so a hostile or

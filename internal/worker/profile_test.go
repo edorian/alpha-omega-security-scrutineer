@@ -92,6 +92,41 @@ func writeMarkerFile(t *testing.T, dir, name string) {
 	}
 }
 
+// writeFileAt writes contents to a slash-separated path relative to dir,
+// creating intermediate directories. Used for the ruby-ext markers, which
+// live under ext/<name>/ rather than at the repo root.
+func writeFileAt(t *testing.T, dir, rel, contents string) {
+	t.Helper()
+	const (
+		fileMode = 0o644
+		dirMode  = 0o755
+	)
+	path := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
+		t.Fatalf("mkdir for %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(contents), fileMode); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// gemspecWithExtensions declares spec.extensions — RubyGems' own marker that
+// the gem builds native code. gemspecPureRuby mentions the word "extensions"
+// only in prose, so the ".extensions" Contains check must NOT match it.
+const gemspecWithExtensions = `Gem::Specification.new do |spec|
+  spec.name = "example"
+  spec.version = "1.0.0"
+  spec.extensions = ["ext/example/extconf.rb"]
+end
+`
+
+const gemspecPureRuby = `Gem::Specification.new do |spec|
+  spec.name = "example"
+  spec.version = "1.0.0"
+  spec.summary = "adds some useful extensions to core classes"
+end
+`
+
 //nolint:maintidx // exhaustive table: one case per builtinProfiles entry plus precedence/fallback edges; splitting would scatter the coverage.
 func TestMatchProfile(t *testing.T) {
 	tests := []struct {
@@ -356,6 +391,87 @@ func TestMatchProfile(t *testing.T) {
 			want: "",
 		},
 		{
+			name: "gemspec with spec.extensions selects ruby-ext",
+			json: `{"package_managers":[{"name":"Bundler"}]}`,
+			setup: func(t *testing.T, dir string) {
+				writeFileAt(t, dir, "example.gemspec", gemspecWithExtensions)
+			},
+			want: "ruby-ext",
+		},
+		{
+			name: "ext/<name>/extconf.rb selects ruby-ext",
+			json: `{"package_managers":[{"name":"Bundler"}]}`,
+			setup: func(t *testing.T, dir string) {
+				writeFileAt(t, dir, "ext/example/extconf.rb", "require 'mkmf'\ncreate_makefile('example')\n")
+			},
+			want: "ruby-ext",
+		},
+		{
+			name: "nested ext/<name>/<sub>/extconf.rb selects ruby-ext (bounded walk)",
+			json: `{"package_managers":[{"name":"Bundler"}]}`,
+			setup: func(t *testing.T, dir string) {
+				writeFileAt(t, dir, "ext/example/native/extconf.rb", "require 'mkmf'\n")
+			},
+			want: "ruby-ext",
+		},
+		{
+			name: "root extconf.rb selects ruby-ext (older single-dir gems)",
+			json: `{"package_managers":[{"name":"Bundler"}]}`,
+			setup: func(t *testing.T, dir string) {
+				writeFileAt(t, dir, "extconf.rb", "require 'mkmf'\n")
+			},
+			want: "ruby-ext",
+		},
+		{
+			name: "ext/<name>/Cargo.toml selects ruby-ext (rb-sys / Cargo-native)",
+			json: `{"package_managers":[{"name":"Bundler"}]}`,
+			setup: func(t *testing.T, dir string) {
+				writeFileAt(t, dir, "ext/example/Cargo.toml", "[package]\nname = \"example\"\n")
+			},
+			want: "ruby-ext",
+		},
+		{
+			name: "ruby-ext matches without a package manager (brief unavailable)",
+			json: `{"package_managers":[]}`,
+			setup: func(t *testing.T, dir string) {
+				writeFileAt(t, dir, "ext/example/extconf.rb", "require 'mkmf'\n")
+			},
+			want: "ruby-ext",
+		},
+		{
+			name: "pure-ruby gemspec mentioning 'extensions' in prose does not match ruby-ext",
+			json: `{"package_managers":[{"name":"Bundler"}]}`,
+			setup: func(t *testing.T, dir string) {
+				writeFileAt(t, dir, "example.gemspec", gemspecPureRuby)
+			},
+			want: "ruby",
+		},
+		{
+			name: "pure-ruby Bundler repo selects ruby",
+			json: `{"package_managers":[{"name":"Bundler"}]}`,
+			setup: func(t *testing.T, dir string) {
+				writeFileAt(t, dir, "Gemfile", "source 'https://rubygems.org'\n")
+			},
+			want: "ruby",
+		},
+		{
+			name: "config/application.rb selects ruby-rails",
+			json: `{"package_managers":[{"name":"Bundler"}]}`,
+			setup: func(t *testing.T, dir string) {
+				writeFileAt(t, dir, "config/application.rb", "module App\n  class Application < Rails::Application\n  end\nend\n")
+			},
+			want: "ruby-rails",
+		},
+		{
+			name: "ruby-ext beats ruby-rails when a Rails app also ships a native ext (registry order)",
+			json: `{"package_managers":[{"name":"Bundler"}]}`,
+			setup: func(t *testing.T, dir string) {
+				writeFileAt(t, dir, "config/application.rb", "module App; end\n")
+				writeFileAt(t, dir, "ext/example/extconf.rb", "require 'mkmf'\n")
+			},
+			want: "ruby-ext",
+		},
+		{
 			name:    "marker profile cannot match without srcDir",
 			json:    `{"package_managers":[]}`,
 			noSrcOK: true,
@@ -376,6 +492,27 @@ func TestMatchProfile(t *testing.T) {
 				t.Errorf("matchProfile = %q, want %q", got.Name, tt.want)
 			}
 		})
+	}
+}
+
+// TestWalkMarkerPresent_bounded locks the Walk matcher's depth bound: an
+// extconf.rb buried below markerWalkMaxDepth must not match (so a pathological
+// tree can't turn every repo into a ruby-ext candidate), while one within the
+// bound does.
+func TestWalkMarkerPresent_bounded(t *testing.T) {
+	m := ProfileMarker{Path: "ext/extconf.rb", Walk: true}
+
+	deep := t.TempDir()
+	rel := "ext/" + strings.Repeat("a/", markerWalkMaxDepth+2) + "extconf.rb"
+	writeFileAt(t, deep, rel, "require 'mkmf'\n")
+	if markerPresent(m, deep) {
+		t.Errorf("extconf.rb below depth %d should not match", markerWalkMaxDepth)
+	}
+
+	shallow := t.TempDir()
+	writeFileAt(t, shallow, "ext/example/extconf.rb", "require 'mkmf'\n")
+	if !markerPresent(m, shallow) {
+		t.Errorf("extconf.rb within depth bound should match")
 	}
 }
 
