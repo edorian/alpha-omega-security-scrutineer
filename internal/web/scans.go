@@ -103,7 +103,12 @@ func (s *Server) scanSkillNames() []string {
 
 func (s *Server) scanShow(w http.ResponseWriter, r *http.Request) {
 	var scan db.Scan
-	if err := s.DB.Preload("Repository").Preload("Findings").First(&scan, r.PathValue("id")).Error; err != nil {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.DB.Preload("Repository").Preload("Findings").First(&scan, id).Error; err != nil {
 		http.NotFound(w, r)
 		return
 	}

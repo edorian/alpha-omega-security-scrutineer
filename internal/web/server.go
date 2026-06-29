@@ -773,7 +773,12 @@ var severityOrder = func() string {
 //nolint:ireturn // T is a concrete struct at every call site, not an interface
 func loadByID[T any](s *Server, w http.ResponseWriter, r *http.Request) (T, bool) {
 	var v T
-	if err := s.DB.First(&v, r.PathValue("id")).Error; err != nil {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		http.NotFound(w, r)
+		return v, false
+	}
+	if err := s.DB.First(&v, id).Error; err != nil {
 		http.NotFound(w, r)
 		return v, false
 	}
@@ -1439,7 +1444,12 @@ func (s *Server) packages(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) packageShow(w http.ResponseWriter, r *http.Request) {
 	var p db.Package
-	if err := s.DB.Preload("Repository").First(&p, r.PathValue("id")).Error; err != nil {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.DB.Preload("Repository").First(&p, id).Error; err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -1500,7 +1510,12 @@ type findingWorkflowData struct {
 
 func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
 	var f db.Finding
-	if err := s.DB.Preload("Labels").First(&f, r.PathValue("id")).Error; err != nil {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.DB.Preload("Labels").First(&f, id).Error; err != nil {
 		http.NotFound(w, r)
 		return
 	}

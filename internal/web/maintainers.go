@@ -107,7 +107,12 @@ func (s *Server) maintainerDoNotContact(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) maintainerShow(w http.ResponseWriter, r *http.Request) {
 	var m db.Maintainer
-	if err := s.DB.Preload("Repositories").First(&m, r.PathValue("id")).Error; err != nil {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.DB.Preload("Repositories").First(&m, id).Error; err != nil {
 		http.NotFound(w, r)
 		return
 	}
