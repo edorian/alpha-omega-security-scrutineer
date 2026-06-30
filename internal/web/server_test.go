@@ -33,7 +33,7 @@ func newTestServer(t testing.TB) (*Server, func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(gdb, q, log, NewBroker(), &worker.Worker{})
+	s, err := New(gdb, q, log, NewBroker(), &worker.Worker{DB: gdb})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3631,6 +3631,37 @@ func TestRetry_preservesSubPath(t *testing.T) {
 	}
 }
 
+func TestRetry_preservesScanGroup(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://github.com/apache/airflow.git", Name: "airflow"}
+	s.DB.Create(&repo)
+	skill := db.Skill{Name: "security-deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
+	s.DB.Create(&skill)
+	orig := db.Scan{
+		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanFailed,
+		SkillID: &skill.ID, SkillName: "security-deep-dive",
+		ScanGroup: "grp-7", FinishedAt: new(time.Now()),
+	}
+	s.DB.Create(&orig)
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/scans/%d/retry", orig.ID), nil)
+	req.Host = testHost
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("retry status %d: %s", w.Code, w.Body)
+	}
+
+	var fresh db.Scan
+	s.DB.Where("id != ?", orig.ID).First(&fresh)
+	if fresh.ScanGroup != "grp-7" {
+		t.Errorf("retry lost scan group: got %q, want grp-7", fresh.ScanGroup)
+	}
+}
+
 func TestRetry_maxTurnsDoneScanResumesSession(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
@@ -3819,6 +3850,39 @@ func TestScansRetryFailed_preservesEffort(t *testing.T) {
 	}
 	if fresh.Effort != "max" {
 		t.Errorf("retry lost effort: got %q, want max", fresh.Effort)
+	}
+}
+
+func TestScansRetryFailed_preservesScanGroup(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://example.com/x.git", Name: "x"}
+	s.DB.Create(&repo)
+	skill := db.Skill{Name: "deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
+	s.DB.Create(&skill)
+	orig := db.Scan{
+		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanFailed,
+		StatusPriority: db.StatusPriorityFor(db.ScanFailed),
+		SkillID:        &skill.ID, SkillName: "deep-dive", ScanGroup: "grp-7",
+	}
+	s.DB.Create(&orig)
+
+	req := httptest.NewRequest("POST", "/scans/retry-failed", nil)
+	req.Host = testHost
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+
+	var fresh db.Scan
+	if err := s.DB.Where("id != ?", orig.ID).First(&fresh).Error; err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ScanGroup != "grp-7" {
+		t.Errorf("retry lost scan group: got %q, want grp-7", fresh.ScanGroup)
 	}
 }
 

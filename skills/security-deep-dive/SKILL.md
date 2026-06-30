@@ -177,9 +177,13 @@ The subagents you spawn do not see this SKILL.md. They get only the prompt you w
 
 ## Concurrent findings
 
-When several deep-dives run in parallel over one repository — one per subproject, fanned out together — they share a `scrutineer.scan_group` in `context.json`. Before writing up a candidate, fetch what your siblings have already filed under that group: `GET {api_base}/repositories/{repository_id}/findings?scan_group={scan_group}`. The list is best-effort — a sibling still mid-run has not published yet, but one that finished has. If a candidate is already there (same sink, same root cause), drop it and rule the sink out citing the sibling rather than duplicating it.
+When several deep-dives run in parallel over one repository — one per subproject, fanned out together — they share a `scrutineer.scan_group` in `context.json`. Two things follow from that, a read before you confirm a finding and a write the moment you do.
 
-On every finding you do report, set `dup_check`: one sentence naming which existing findings you compared against and why this one is distinct. When `scan_group` is absent (a one-off run) or the list came back empty, "no sibling findings to compare against" is a valid `dup_check`.
+**Read.** Before writing up a candidate, fetch what your siblings have already filed under that group: `GET {api_base}/repositories/{repository_id}/findings?scan_group={scan_group}`. The list is best-effort — a sibling still mid-run has only published the findings it has confirmed so far, not all it will. If a candidate is already there (same sink, same root cause), drop it and rule the sink out citing the sibling rather than duplicating it.
+
+**Write.** As soon as you confirm a finding — not at the end, when the whole report lands — `POST {api_base}/repositories/{repository_id}/findings` with that one finding as the body (the same object shape it has in `report.json`: `title`, `severity`, `location`, `cwe`, `sinks`, `dup_check`, …). That publishes it into the shared log immediately, so a sibling still working the same overlap sees it and can stand down instead of re-deriving it ten minutes later. The finding still belongs in your final `report.json` exactly as before; the streamed copy reconciles against it, it does not replace it.
+
+On every finding you report, set `dup_check`: one sentence naming which existing findings you compared against and why this one is distinct. When `scan_group` is absent (an API or chained enqueue that did not set one) or the list came back empty, "no sibling findings to compare against" is a valid `dup_check`.
 
 ## Output
 

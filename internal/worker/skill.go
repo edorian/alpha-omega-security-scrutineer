@@ -404,27 +404,16 @@ func (w *Worker) parseFindingsOutput(skill *db.Skill, scan *db.Scan, report stri
 		if db.SeverityAtLeast(f.Severity, worst) || worst == "" {
 			worst = f.Severity
 		}
-		f.LastSeenScanID = scan.ID
-		f.LastSeenCommit = scan.Commit
-		f.SeenCount = 1
 		seenThisScan[f.Fingerprint] = true
 
-		var existing db.Finding
-		err := w.DB.Where("repository_id = ? AND fingerprint = ?", scan.RepositoryID, f.Fingerprint).
-			Order("id").First(&existing).Error
-		if err == nil {
-			if uerr := w.reobserveFinding(&existing, f, scan); uerr != nil {
-				return uerr
-			}
+		wasCreated, perr := w.persistFinding(scan, f)
+		if perr != nil {
+			return perr
+		}
+		if wasCreated {
+			created++
+		} else {
 			observed++
-			continue
-		}
-		if cerr := w.DB.Create(f).Error; cerr != nil {
-			return fmt.Errorf("save finding: %w", cerr)
-		}
-		created++
-		if w.OnFindingCreated != nil {
-			w.OnFindingCreated(scan, f)
 		}
 	}
 
@@ -439,16 +428,56 @@ func (w *Worker) parseFindingsOutput(skill *db.Skill, scan *db.Scan, report stri
 	return nil
 }
 
+// persistFinding writes one finding into the repository's finding set using
+// fingerprint dedup: a match re-observes the existing row, otherwise a new row
+// is created and OnFindingCreated fires. Shared by the end-of-scan report
+// ingestion and the streamed concurrent-finding log. On the dedup
+// branch f.ID is set to the existing row so callers can report the live id.
+func (w *Worker) persistFinding(scan *db.Scan, f *db.Finding) (created bool, err error) {
+	f.LastSeenScanID = scan.ID
+	f.LastSeenCommit = scan.Commit
+	f.SeenCount = 1
+
+	var existing db.Finding
+	lookup := w.DB.Where("repository_id = ? AND fingerprint = ?", scan.RepositoryID, f.Fingerprint).
+		Order("id").First(&existing).Error
+	if lookup == nil {
+		if uerr := w.reobserveFinding(&existing, f, scan); uerr != nil {
+			return false, uerr
+		}
+		f.ID = existing.ID
+		return false, nil
+	}
+	if cerr := w.DB.Create(f).Error; cerr != nil {
+		return false, fmt.Errorf("save finding: %w", cerr)
+	}
+	if w.OnFindingCreated != nil {
+		w.OnFindingCreated(scan, f)
+	}
+	return true, nil
+}
+
 // reobserveFinding handles the dedup branch in parseFindingsOutput:
 // bump the seen-count, refresh fields that may drift between scans
 // (location, VID, references), and write an `observed` history row.
 // Reference and history failures are logged but not fatal; the finding
 // row write itself does propagate so a real DB error stops the scan.
 func (w *Worker) reobserveFinding(existing, f *db.Finding, scan *db.Scan) error {
+	// A finding already last-seen in this same scan was streamed into the
+	// concurrent-finding log earlier in this run. Reconciling it from
+	// the final report must be idempotent: refresh drifting fields but do not
+	// bump seen_count or write another observed-history row, or a streamed
+	// finding would count as seen twice by one scan.
+	sameScan := existing.LastSeenScanID == scan.ID
+
+	seenCount := existing.SeenCount + 1
+	if sameScan {
+		seenCount = existing.SeenCount
+	}
 	updates := map[string]any{
 		"last_seen_scan_id":   scan.ID,
 		"last_seen_commit":    scan.Commit,
-		"seen_count":          existing.SeenCount + 1,
+		"seen_count":          seenCount,
 		"missed_count":        0,
 		"last_missed_scan_id": 0,
 		"location":            f.Location,
@@ -481,6 +510,9 @@ func (w *Worker) reobserveFinding(existing, f *db.Finding, scan *db.Scan) error 
 	}
 	if err := w.upsertFindingReferences(existing.ID, f.References); err != nil {
 		w.Log.Warn("upsert finding references", "finding", existing.ID, "scan", scan.ID, "err", err)
+	}
+	if sameScan {
+		return nil
 	}
 	if err := w.DB.Create(&db.FindingHistory{
 		FindingID: existing.ID,
