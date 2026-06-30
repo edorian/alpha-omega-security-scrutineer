@@ -255,6 +255,7 @@ func updateDependentsTable(gdb *gorm.DB, repoID uint, payload []byte) error {
 		return fmt.Errorf("decode dependents cache: %w", err)
 	}
 	rows := make([]db.Dependent, 0)
+	seen := make(map[string]bool)
 	for _, entry := range result {
 		for _, raw := range entry.Dependents {
 			var d struct {
@@ -272,6 +273,12 @@ func updateDependentsTable(gdb *gorm.DB, repoID uint, payload []byte) error {
 			}
 			if err := json.Unmarshal(raw, &d); err != nil {
 				return fmt.Errorf("decode dependent: %w", err)
+			}
+			if d.PURL != "" {
+				if seen[d.PURL] {
+					continue
+				}
+				seen[d.PURL] = true
 			}
 			repoURL := d.RepositoryURL
 			if repoURL == "" {

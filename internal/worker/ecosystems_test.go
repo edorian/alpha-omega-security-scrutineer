@@ -247,6 +247,21 @@ func TestUpdateDependentsTable_mapsUpstreamPayload(t *testing.T) {
 				}`),
 			},
 		},
+		{
+			Package:   "widget-extra",
+			Ecosystem: "npm",
+			Dependents: []json.RawMessage{
+				json.RawMessage(`{
+					"name":"rails-x-duplicate",
+					"ecosystem":"rubygems",
+					"purl":"pkg:gem/rails-x",
+					"downloads":9999,
+					"dependent_repos_count":999,
+					"repository_url":"https://github.com/acme/rails-x-duplicate",
+					"latest_release_number":"9.9.9"
+				}`),
+			},
+		},
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
