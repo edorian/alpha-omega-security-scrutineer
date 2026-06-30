@@ -3600,65 +3600,53 @@ func TestScansIndex_maxTurnsScanShowsBadgeAndRetry(t *testing.T) {
 	}
 }
 
-func TestRetry_preservesSubPath(t *testing.T) {
-	s, done := newTestServer(t)
-	defer done()
-
-	repo := db.Repository{URL: "https://github.com/apache/airflow.git", Name: "airflow"}
-	s.DB.Create(&repo)
-	skill := db.Skill{Name: "security-deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
-	s.DB.Create(&skill)
-	orig := db.Scan{
-		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanFailed,
-		SkillID: &skill.ID, SkillName: "security-deep-dive",
-		SubPath: "airflow-core", FinishedAt: new(time.Now()),
+func TestRetry_preservesScanFields(t *testing.T) {
+	cases := []struct {
+		name  string
+		set   func(*db.Scan)
+		check func(*testing.T, db.Scan)
+	}{
+		{"sub_path", func(sc *db.Scan) { sc.SubPath = "airflow-core" }, func(t *testing.T, f db.Scan) {
+			if f.SubPath != "airflow-core" {
+				t.Errorf("retry lost sub-path: got %q, want airflow-core", f.SubPath)
+			}
+		}},
+		{"scan_group", func(sc *db.Scan) { sc.ScanGroup = "grp-7" }, func(t *testing.T, f db.Scan) {
+			if f.ScanGroup != "grp-7" {
+				t.Errorf("retry lost scan group: got %q, want grp-7", f.ScanGroup)
+			}
+		}},
 	}
-	s.DB.Create(&orig)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, done := newTestServer(t)
+			defer done()
 
-	req := httptest.NewRequest("POST", fmt.Sprintf("/scans/%d/retry", orig.ID), nil)
-	req.Host = testHost
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("retry status %d: %s", w.Code, w.Body)
-	}
+			repo := db.Repository{URL: "https://github.com/apache/airflow.git", Name: "airflow"}
+			s.DB.Create(&repo)
+			skill := db.Skill{Name: "security-deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
+			s.DB.Create(&skill)
+			orig := db.Scan{
+				RepositoryID: repo.ID, Kind: "skill", Status: db.ScanFailed,
+				SkillID: &skill.ID, SkillName: "security-deep-dive",
+				FinishedAt: new(time.Now()),
+			}
+			tc.set(&orig)
+			s.DB.Create(&orig)
 
-	var fresh db.Scan
-	s.DB.Where("id != ?", orig.ID).First(&fresh)
-	if fresh.SubPath != "airflow-core" {
-		t.Errorf("retry lost sub-path: got %q, want airflow-core", fresh.SubPath)
-	}
-}
+			req := httptest.NewRequest("POST", fmt.Sprintf("/scans/%d/retry", orig.ID), nil)
+			req.Host = testHost
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			w := httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, req)
+			if w.Code != http.StatusSeeOther {
+				t.Fatalf("retry status %d: %s", w.Code, w.Body)
+			}
 
-func TestRetry_preservesScanGroup(t *testing.T) {
-	s, done := newTestServer(t)
-	defer done()
-
-	repo := db.Repository{URL: "https://github.com/apache/airflow.git", Name: "airflow"}
-	s.DB.Create(&repo)
-	skill := db.Skill{Name: "security-deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
-	s.DB.Create(&skill)
-	orig := db.Scan{
-		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanFailed,
-		SkillID: &skill.ID, SkillName: "security-deep-dive",
-		ScanGroup: "grp-7", FinishedAt: new(time.Now()),
-	}
-	s.DB.Create(&orig)
-
-	req := httptest.NewRequest("POST", fmt.Sprintf("/scans/%d/retry", orig.ID), nil)
-	req.Host = testHost
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("retry status %d: %s", w.Code, w.Body)
-	}
-
-	var fresh db.Scan
-	s.DB.Where("id != ?", orig.ID).First(&fresh)
-	if fresh.ScanGroup != "grp-7" {
-		t.Errorf("retry lost scan group: got %q, want grp-7", fresh.ScanGroup)
+			var fresh db.Scan
+			s.DB.Where("id != ?", orig.ID).First(&fresh)
+			tc.check(t, fresh)
+		})
 	}
 }
 
