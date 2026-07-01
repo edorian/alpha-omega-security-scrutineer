@@ -127,10 +127,12 @@
 # anthropic_base_url: https://my-proxy.corp.com/v1
 
 # The model picker in the UI. Replacing this list replaces the built-in
-# set (Sonnet 4.6, Opus). Leave it out to keep the built-in list.
+# set (Opus, Sonnet, Fable). Leave it out to keep the built-in list.
 # models:
 #   - name: Sonnet 4.6
 #     id:   claude-sonnet-4-6
+#   - name: Sonnet 5.0
+#     id:   claude-sonnet-5
 #   - name: Opus
 #     id:   claude-opus-4-7
 

@@ -289,6 +289,8 @@ The config file can also replace the model pick list and pin the fallback defaul
     models:
       - name: Sonnet 4.6
         id:   claude-sonnet-4-6
+      - name: Sonnet 5.0
+        id:   claude-sonnet-5
       - name: Opus
         id:   claude-opus-4-7
 

@@ -36,6 +36,12 @@ func TestServerDefaultModel(t *testing.T) {
 	}
 }
 
+func TestBuiltInModelsIncludeSonnet5(t *testing.T) {
+	if !ValidModel("claude-sonnet-5") {
+		t.Fatal("built-in model list should include Sonnet 5.0")
+	}
+}
+
 func TestModelTiers(t *testing.T) {
 	withTestModels(t, []Model{
 		{Name: "High", ID: "test-high"},
