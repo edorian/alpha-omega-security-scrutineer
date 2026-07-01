@@ -418,9 +418,10 @@ func (w *Worker) parseFindingsOutput(skill *db.Skill, scan *db.Scan, report stri
 	}
 
 	missed := w.markNotObserved(scan, seenThisScan)
+	retracted := w.markRetracted(scan, seenThisScan)
 
-	emit(Event{Kind: KindText, Text: fmt.Sprintf("parsed %d finding(s): %d new, %d re-observed, %d not-observed",
-		len(findings), created, observed, missed)})
+	emit(Event{Kind: KindText, Text: fmt.Sprintf("parsed %d finding(s): %d new, %d re-observed, %d not-observed, %d retracted",
+		len(findings), created, observed, missed, retracted)})
 
 	if db.SeverityAtLeast(worst, skill.FailOn) {
 		return &FailOnThresholdError{Worst: worst, Threshold: skill.FailOn}
@@ -699,6 +700,37 @@ func (w *Worker) hasEverBeenReportedOrAcknowledged(findingID uint) bool {
 			findingID, "status", string(db.FindingReported), string(db.FindingAcknowledged)).
 		Count(&count)
 	return count > 0
+}
+
+// markRetracted flags findings this scan streamed into the concurrent-finding
+// log but then left out of its final report.json. The row is kept — a sibling
+// may have stood down citing it, so deleting would lose the bug from both scans
+// — but a `retracted` history row records that the scan did not confirm it in
+// the end, so it is no longer indistinguishable from a confirmed finding. Only
+// rows this scan both created and last saw are considered; a finding a sibling
+// re-observed since stays live under that sibling.
+func (w *Worker) markRetracted(scan *db.Scan, seen map[string]bool) int {
+	var streamed []db.Finding
+	w.DB.Where("scan_id = ? AND last_seen_scan_id = ?", scan.ID, scan.ID).Find(&streamed)
+
+	retracted := 0
+	for _, f := range streamed {
+		if seen[f.Fingerprint] {
+			continue
+		}
+		if err := w.DB.Create(&db.FindingHistory{
+			FindingID: f.ID,
+			Field:     "retracted",
+			NewValue:  fmt.Sprintf("scan %d @ %s", scan.ID, scan.Commit),
+			Source:    db.SourceTool,
+			By:        scan.SkillName,
+		}).Error; err != nil {
+			w.Log.Error("mark finding retracted", "finding", f.ID, "err", err)
+			continue
+		}
+		retracted++
+	}
+	return retracted
 }
 
 // parseMaintainersOutput upserts Maintainer rows and links them to the
