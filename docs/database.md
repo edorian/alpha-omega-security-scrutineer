@@ -107,10 +107,10 @@ One row per installed skill. Loaded from `skills/` directories on disk or the UI
 | body | text | Markdown body after the frontmatter. The prompt. |
 | schema_json | text | Optional schema.json contents. |
 | output_file | text | Relative path the skill writes to. Promoted from metadata. |
-| output_kind | text | Parser key: `findings`, `maintainers`, `packages`, `advisories`, `dependents`, `dependencies`, `finding_dedup`, `repo_metadata`, `repo_overview`, `subprojects`, `posture`, `verify`, `patch`, `threat_model`, `exposure`, `freeform`. Promoted from metadata. |
+| output_kind | text | Parser key: `findings`, `maintainers`, `packages`, `advisories`, `dependencies`, `finding_dedup`, `repo_metadata`, `repo_overview`, `subprojects`, `posture`, `verify`, `patch`, `threat_model`, `exposure`, `freeform`. Promoted from metadata. |
 | version | integer | Bumps on every save. |
 | active | boolean | |
-| requires_remote | boolean | When true, scrutineer refuses to enqueue this skill against a local-directory repository (file:// URL). Set via `scrutineer.requires_remote: true` in SKILL.md frontmatter. Use for skills that depend on a forge URL or remote-only data (advisories, dependents, exposure, fork, maintainers, metadata, packages, report-upstream). |
+| requires_remote | boolean | When true, scrutineer refuses to enqueue this skill against a local-directory repository (file:// URL). Set via `scrutineer.requires_remote: true` in SKILL.md frontmatter. Use for skills that depend on a forge URL or remote-only data (advisories, exposure, fork, maintainers, metadata, packages, report-upstream). |
 | requires_profile | text | Constrains the skill to a single registered runner profile (e.g. `php`). Empty means no constraint. Set via `scrutineer.requires_profile` in SKILL.md frontmatter. Enqueue returns 400 when the requested profile mismatches; the worker fails the scan when auto-detection resolves to a different profile. |
 | paths | text | Newline-joined shell-glob allow-list from `scrutineer.paths`. When non-empty, the skill sees only matching files inside the workspace `src/` and the builtin skip list is bypassed. |
 | ignore_paths | text | Newline-joined shell-glob deny-list from `scrutineer.ignore_paths`. Always layered on top of the active include set. |
@@ -315,7 +315,7 @@ Registry entries from the `packages` skill. Replaced each run.
 
 ## dependents
 
-Top runtime dependents of this repository's packages. Populated by the `dependents` skill.
+Top runtime dependents of this repository's packages. Populated by the ecosystems dependents prefetch.
 
 | Column | Type | Notes |
 |--------|------|-------|

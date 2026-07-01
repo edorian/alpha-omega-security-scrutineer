@@ -15,7 +15,6 @@ These ship in `skills/` and are loaded with `-skills ./skills`. The `triage` ski
 | `repo-overview` | Runs `brief --json` for a structured project summary used by other skills as orientation. |
 | `packages` | Looks up every published package the repository produces across all registries, with download and dependent counts. |
 | `advisories` | Fetches published GHSA and CVE records that affect any of those packages. |
-| `dependents` | Top runtime dependents per published package, ranked, so reach analysis has a shortlist. |
 | `dependencies` | Indexes every manifest and lockfile in the tree with `git-pkgs list`. |
 | `sbom` | Generates a CycloneDX SBOM with `git-pkgs sbom`. |
 | `subprojects` | Enumerates monorepo packages and workspaces so deep-dive scans can be scoped to a sub-path. |
@@ -96,7 +95,7 @@ metadata:
 | `metadata.scrutineer.min_confidence` | `low` `medium` `high` | Findings below this confidence are dropped before they reach the database. |
 | `metadata.scrutineer.report_on` | `Low` `Medium` `High` `Critical` | Lowest severity that produces a Finding row. Lower-severity hits are recorded on the scan but not surfaced. |
 | `metadata.scrutineer.fail_on` | `Low` `Medium` `High` `Critical` | If any finding meets or exceeds this severity, the scan is marked failed. Useful for CI-style gating. |
-| `metadata.scrutineer.requires_remote` | bool | When `true`, this skill is skipped on local-directory scans (`file://` repos). Set on skills that need a forge URL or remote-only data such as `advisories`, `dependents`, `exposure`, `fork`, `maintainers`, `metadata`, `packages`, `public-issue`, `report-upstream`. Defaults to `false` so new skills run on both remote and local repositories. |
+| `metadata.scrutineer.requires_remote` | bool | When `true`, this skill is skipped on local-directory scans (`file://` repos). Set on skills that need a forge URL or remote-only data such as `advisories`, `exposure`, `fork`, `maintainers`, `metadata`, `packages`, `public-issue`, `report-upstream`. Defaults to `false` so new skills run on both remote and local repositories. |
 | `metadata.scrutineer.requires_profile` | string | Pins the skill to a single registered runner profile (e.g. `php`). The enqueue API returns `400` when the requested profile mismatches; if the operator does not force a profile, the worker fails the scan when auto-detection resolves to a different one. Must name a profile registered in `internal/worker/profile.go` — `default` and the empty string are not valid here (use the absence of the key for "no constraint"). |
 | `metadata.scrutineer.requires` | list of string | Skill names that must each have a completed scan on the repository before this skill dispatches. While a prereq is in flight the worker re-queues the scan with exponential backoff (30s doubling to a 5m cap, 20 attempts) and fails it when the budget runs out; if every run of a prereq has already failed or been cancelled the dependent fails immediately. A prereq that is unregistered, disabled, or was never enqueued for the repository counts as satisfied, so triage's gating decisions don't deadlock dependents. |
 | `metadata.scrutineer.paths` | list of string | Shell-glob allow-list (`*`, `?`, `**`) of paths the skill sees inside the workspace `src/`. When set, only matching files are exposed and the builtin skip list is bypassed. |
@@ -130,7 +129,6 @@ Declaring `scrutineer.paths` replaces this skip list entirely: the skill sees on
 | `repo_overview` | Brief summary stored for other skills to read. |
 | `packages` | Package rows. |
 | `advisories` | Advisory rows. |
-| `dependents` | Dependent rows. |
 | `dependencies` | Dependency rows. |
 | `finding_dedup` | Duplicate decisions applied to existing Finding rows through status history and notes. |
 | `maintainers` | Maintainer rows. |

@@ -410,6 +410,7 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	retireRemovedSkills(log, gdb)
 
 	go func() {
 		if n, err := worker.SyncCNAs(context.Background(), gdb, ""); err != nil {
@@ -496,6 +497,12 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+func retireRemovedSkills(log *slog.Logger, gdb *gorm.DB) {
+	if err := db.RetireDependentsSkill(gdb); err != nil {
+		log.Warn("retire dependents skill failed", "err", err)
+	}
 }
 
 // checkRunnerImage compares the pulled runner image against the registry and,

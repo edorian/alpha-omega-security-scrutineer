@@ -14,7 +14,6 @@ metadata:
     - repo-overview
     - advisories
     - packages
-    - dependents
 ---
 
 # security-deep-dive
@@ -25,7 +24,7 @@ The audit has two phases. Phase 1 produces an inventory of every sink in the cod
 
 Workspace layout:
 - `./src` — the cloned repository
-- `./context.json` — repo identity plus a `scrutineer` block with `api_base`, `token`, `repository_id`. If `scrutineer.scan_subpath` is set, scope every inventory, trace, and validation step to `./src/{scan_subpath}` only — do not reach outside that sub-folder for code analysis, and treat the sub-folder as the project root for all relative locations in the report. Other repositories' concerns (packages, advisories, maintainers) remain repo-wide. If prior scans of this repo have run (metadata, packages, advisories, dependents, maintainers), their results are available at the API documented below; use them instead of re-fetching from upstream.
+- `./context.json` — repo identity plus a `scrutineer` block with `api_base`, `token`, `repository_id`. If `scrutineer.scan_subpath` is set, scope every inventory, trace, and validation step to `./src/{scan_subpath}` only — do not reach outside that sub-folder for code analysis, and treat the sub-folder as the project root for all relative locations in the report. Other repositories' concerns (packages, advisories, maintainers) remain repo-wide. If prior scans or ecosystem prefetches of this repo have run, their results are available at the API documented below; use them instead of re-fetching from upstream.
 - `./threat_model.json` — optional. When present, an operator-supplied threat model that overrides the API-fetched one (see Phase 1).
 - `./report.json` — write your final report here
 - `./schema.json` — the JSON schema your report must conform to
@@ -140,7 +139,7 @@ For libraries published to a registry: start with scrutineer's dependents cache:
 
 Unpack the published version of each — not git HEAD; the released artefact. Read how it calls this sink. Some will not be exposed (safe variant, mitigating flag, migrated off); note these as counterexamples with line numbers. The first significant exposed dependent is the headline; if it is itself widely depended on, follow it one level.
 
-If the dependents list is empty the dependents skill has not run yet — fall back to packages.ecosyste.ms directly.
+If the dependents list is empty the ecosystem prefetch may not have populated it yet — fall back to packages.ecosyste.ms directly.
 
 For targets that are not library-shaped — package managers, servers, build tools — trace the input paths through the trust tiers from Phase 1 instead. Who can supply this input under each documented deployment.
 

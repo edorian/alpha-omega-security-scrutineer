@@ -33,7 +33,7 @@ Click **Add repository** in the sidebar, paste a git HTTPS URL, and scrutineer e
 
 To onboard a whole GitHub org at once, open **Add multiple** → **Import a whole org** and enter the org (or user) login. Scrutineer fetches every repository and queues each one with the default scan set, skipping forks and archived repos unless you opt in. Duplicates already in the database are skipped. Set `GITHUB_TOKEN` to raise GitHub's unauthenticated rate limit when importing large orgs.
 
-You can also scan a directory on disk, useful before pushing, or for code not hosted on a git forge. Paste an absolute path (`/path/to/project`) in the same **Add repository** field. Scrutineer copies the directory into a per-scan workspace and runs the default skill set; skills that need a forge URL or ecosyste.ms enrichment (`advisories`, `dependents`, `exposure`, `fork`, `maintainers`, `metadata`, `packages`, `public-issue`, `report-upstream`) are skipped automatically. Symlinks are recreated as-is rather than dereferenced during the copy; in container mode their targets then resolve inside the container, so host files reached only through such a link are not visible to skills. Under `--no-container` the kernel dereferences them normally, so only point scrutineer at trees you trust.
+You can also scan a directory on disk, useful before pushing, or for code not hosted on a git forge. Paste an absolute path (`/path/to/project`) in the same **Add repository** field. Scrutineer copies the directory into a per-scan workspace and runs the default skill set; skills that need a forge URL or ecosyste.ms enrichment (`advisories`, `exposure`, `fork`, `maintainers`, `metadata`, `packages`, `public-issue`, `report-upstream`) are skipped automatically. Symlinks are recreated as-is rather than dereferenced during the copy; in container mode their targets then resolve inside the container, so host files reached only through such a link are not visible to skills. Under `--no-container` the kernel dereferences them normally, so only point scrutineer at trees you trust.
 
 The optional analysis tools (semgrep, zizmor, git-pkgs, brief) are bundled in the runner image, so you don't need them installed locally when the container runner is in use.
 
@@ -116,7 +116,6 @@ When a repo is added, the `triage` skill is enqueued. Its SKILL.md lists the ski
 | `metadata` | Fetches repo metadata from repos.ecosyste.ms |
 | `packages` | Looks up published packages from packages.ecosyste.ms |
 | `advisories` | Fetches known security advisories |
-| `dependents` | Top runtime dependents per package |
 | `dependencies` | Runs `git-pkgs list` to index every manifest |
 | `sbom` | Runs `git-pkgs sbom` for a CycloneDX SBOM |
 | `maintainers` | Model-backed analysis identifying real maintainers and contact routes |
