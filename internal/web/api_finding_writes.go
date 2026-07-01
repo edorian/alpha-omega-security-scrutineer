@@ -188,9 +188,9 @@ func (s *Server) findingScoped(w http.ResponseWriter, r *http.Request) (uint, bo
 }
 
 // sourceFromRequest attributes API PATCH writes: model_suggested when the
-// bearer token's scan has a skill (skills write as themselves), analyst
-// otherwise. Browser form edits do not come through here -- findingFields,
-// findingStatus and findingNotes write SourceAnalyst directly.
+// bearer token scan has a skill, analyst otherwise. Browser form edits do
+// not come through here: findingFields and findingStatus write SourceAnalyst
+// directly, while findingNotes appends analyst notes through AddFindingNote.
 func sourceFromRequest(r *http.Request) db.FindingSource {
 	sc := scanFromRequest(r)
 	if sc != nil && sc.SkillID != nil {
