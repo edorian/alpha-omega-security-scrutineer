@@ -51,7 +51,6 @@ If `scrutineer.scan_ref` is set in `context.json`, include it in the POST body a
 Always:
 
 - `metadata`
-- `maintainers`
 - `repo-overview`
 - `packages`
 - `advisories`
@@ -62,11 +61,10 @@ Only when `has_workflows`:
 
 Only when `has_packages`:
 
-- `dependents`
 - `dependencies`
 - `sbom`
 
-`packages` and `advisories` query ecosyste.ms by repository URL rather than reading local manifests, so they run unconditionally even though they sound package-related. `dependents` also queries by URL but is only meaningful when the repo actually publishes packages, so it stays gated.
+`packages` and `advisories` query ecosyste.ms by repository URL rather than reading local manifests, so they run unconditionally even though they sound package-related.
 
 Only when `has_code`:
 

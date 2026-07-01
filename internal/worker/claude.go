@@ -26,10 +26,15 @@ type MaxTurnsReachedError struct{}
 
 func (MaxTurnsReachedError) Error() string { return "hit max turns cap" }
 
-// SkillRunner executes one skill scan. Tests and the docker-backed runner
+// SkillRunner executes one skill scan. Tests and the container-backed runner
 // substitute the process launch without touching the queue plumbing.
 type SkillRunner interface {
 	RunSkill(ctx context.Context, sj SkillJob, emit func(Event)) (SkillResult, error)
+	// SkillDir is where the worker stages SKILL.md/schema.json before
+	// calling RunSkill, so the runner's harness discovers it. The path
+	// varies per harness (.claude/skills/{name}, skills/{name},
+	// .opencode/skill/{name}); the staged content does not.
+	SkillDir(workRoot, name string) string
 }
 
 // SkillJob is a scan driven by an on-disk claude-code skill. The runner
@@ -110,10 +115,16 @@ type LocalClaude struct {
 	MaxTurns  int
 }
 
+// SkillDir is fixed at claude's discovery path: the no-container
+// fallback is claude-only by design.
+func (LocalClaude) SkillDir(workRoot, name string) string {
+	return ClaudeHarness{}.SkillDir(workRoot, name)
+}
+
 // RunSkill runs claude against a staged skill in a local workspace. The
 // workspace layout is:
 //
-//	{DataDir}/scan-{id}/src/                clone (read-only in docker)
+//	{DataDir}/scan-{id}/src/                clone (read-only in the container)
 //	{DataDir}/scan-{id}/.claude/skills/NAME staged skill (read by claude-code)
 //	{DataDir}/scan-{id}/OutputFile          where the skill writes, if any
 func (l LocalClaude) RunSkill(ctx context.Context, sj SkillJob, emit func(Event)) (SkillResult, error) {
@@ -141,17 +152,17 @@ func (l LocalClaude) RunSkill(ctx context.Context, sj SkillJob, emit func(Event)
 	}
 
 	emit(Event{Kind: KindText, Text: "$ claude -p <skill:" + sj.Name + ">"})
-	planLimitText := ""
+	accountErrText := ""
 	wrappedEmit := func(e Event) {
-		if planLimitText == "" {
-			planLimitText = claudePlanLimitText(e.Text)
+		if accountErrText == "" {
+			accountErrText = claudeAccountErrorText(e.Text)
 		}
 		emit(e)
 	}
 	args := buildClaudeArgs(sj, l.Effort, l.MaxTurns)
 	hitMaxTurns, sessionID, waitErr := l.runClaudeOnce(ctx, args, work, wrappedEmit)
 
-	if waitErr != nil && sj.ResumeSessionID != "" && sessionID == "" && planLimitText == "" {
+	if waitErr != nil && sj.ResumeSessionID != "" && sessionID == "" && accountErrText == "" {
 		if sj.ResumePrompt != "" {
 			emit(Event{Kind: KindText, Text: "resume of session " + sj.ResumeSessionID + " failed; " + resumePromptNoFreshFallbackText})
 			return SkillResult{Commit: commit}, fmt.Errorf("claude exited: %w", waitErr)
@@ -175,8 +186,8 @@ func (l LocalClaude) RunSkill(ctx context.Context, sj SkillJob, emit func(Event)
 		if hitMaxTurns {
 			return res, &MaxTurnsReachedError{}
 		}
-		if planLimitText != "" {
-			return res, &ClaudePlanLimitError{Detail: planLimitText}
+		if accountErrText != "" {
+			return res, &ClaudeAccountError{Detail: accountErrText}
 		}
 		return res, fmt.Errorf("claude exited: %w", waitErr)
 	}
@@ -251,7 +262,7 @@ func readCappedReport(path string, emit func(Event)) string {
 }
 
 // buildClaudeArgs assembles the `claude -p` argv shared by the local and
-// docker runners. When the skill declares an allowed-tools list the agent
+// container runners. When the skill declares an allowed-tools list the agent
 // is held to it under acceptEdits (writes to report.json still go through
 // unprompted, arbitrary Bash does not); otherwise it falls back to the
 // historical bypassPermissions behaviour.

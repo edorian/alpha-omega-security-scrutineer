@@ -48,7 +48,7 @@ data: /var/lib/scrutineer
 effort: medium
 default_model: claude-sonnet-4-6
 models:
-  - name: Sonnet
+  - name: Sonnet 4.6
     id:   claude-sonnet-4-6
   - name: Opus
     id:   claude-opus-4-6
@@ -56,7 +56,7 @@ skills:
   - ./skills
   - /srv/skills
 skills_repo: https://github.com/org/skills
-no_docker: true
+no_container: true
 hardened: true
 runner_image: custom-runner
 egress_allow:
@@ -76,14 +76,14 @@ metadata_dir: .ossprey/
 	if c.Addr != "0.0.0.0:9000" || c.DefaultModel != "claude-sonnet-4-6" {
 		t.Errorf("flat fields: %+v", c)
 	}
-	if len(c.Models) != 2 || c.Models[0].Name != "Sonnet" {
+	if len(c.Models) != 2 || c.Models[0].Name != "Sonnet 4.6" {
 		t.Errorf("models: %+v", c.Models)
 	}
 	if len(c.Skills) != 2 {
 		t.Errorf("skills: %+v", c.Skills)
 	}
-	if c.NoDocker == nil || !*c.NoDocker {
-		t.Errorf("no_docker: %v", c.NoDocker)
+	if c.NoContainer == nil || !*c.NoContainer {
+		t.Errorf("no_container: %v", c.NoContainer)
 	}
 	if c.Hardened == nil || !*c.Hardened {
 		t.Errorf("hardened: %v", c.Hardened)
@@ -105,6 +105,26 @@ metadata_dir: .ossprey/
 	}
 	if c.MetadataDir != ".ossprey/" {
 		t.Errorf("metadata_dir=%q, want .ossprey/", c.MetadataDir)
+	}
+}
+
+func TestLoad_noContainerAlias(t *testing.T) {
+	// no_docker is the retained pre-rename alias; Load folds it into NoContainer.
+	aliasOnly, err := Load(write(t, "no_docker: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aliasOnly.NoContainer == nil || !*aliasOnly.NoContainer {
+		t.Errorf("no_docker alias did not set NoContainer: %v", aliasOnly.NoContainer)
+	}
+
+	// no_container is canonical and wins when both keys are present.
+	both, err := Load(write(t, "no_container: false\nno_docker: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if both.NoContainer == nil || *both.NoContainer {
+		t.Errorf("no_container should win over no_docker: %v", both.NoContainer)
 	}
 }
 
@@ -144,6 +164,17 @@ func TestLoad_rejectsInvalidClone(t *testing.T) {
 	path := write(t, "clone: fast\n")
 	if _, err := Load(path); err == nil {
 		t.Error("expected error for invalid clone value")
+	}
+}
+
+func TestValidateRuntime(t *testing.T) {
+	for _, name := range []string{"", "docker", "podman", "apple"} {
+		if err := ValidateRuntime(name); err != nil {
+			t.Errorf("ValidateRuntime(%q) = %v, want nil", name, err)
+		}
+	}
+	if err := ValidateRuntime("containerd"); err == nil {
+		t.Error("expected error for unknown runtime")
 	}
 }
 

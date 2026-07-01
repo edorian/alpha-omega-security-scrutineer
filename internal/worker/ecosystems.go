@@ -121,6 +121,12 @@ func refreshEcosystems(ctx context.Context, gdb *gorm.DB, repoID uint, staleOnly
 			src.fetchedCol: now,
 		}).Error; err != nil {
 			log.Warn("ecosystems cache write failed", "repo", repoID, "source", src.key, "err", err)
+			continue
+		}
+		if src.key == "dependents" {
+			if err := updateDependentsTable(gdb, repoID, body); err != nil {
+				log.Warn("ecosystems dependents table write failed", "repo", repoID, "err", err)
+			}
 		}
 	}
 	return nil
@@ -241,6 +247,67 @@ func fetchDependents(ctx context.Context, ep ecosystemsEndpoints, repoURL string
 		out = append(out, dependentsEntry{Package: p.Name, Ecosystem: p.Ecosystem, Dependents: deps})
 	}
 	return json.Marshal(out)
+}
+
+func updateDependentsTable(gdb *gorm.DB, repoID uint, payload []byte) error {
+	var result []dependentsEntry
+	if err := json.Unmarshal(payload, &result); err != nil {
+		return fmt.Errorf("decode dependents cache: %w", err)
+	}
+	rows := make([]db.Dependent, 0)
+	seen := make(map[string]bool)
+	for _, entry := range result {
+		for _, raw := range entry.Dependents {
+			var d struct {
+				Name          string `json:"name"`
+				Ecosystem     string `json:"ecosystem"`
+				PURL          string `json:"purl"`
+				RepositoryURL string `json:"repository_url"`
+				RepoMetadata  struct {
+					HTMLURL string `json:"html_url"`
+				} `json:"repo_metadata"`
+				Downloads           int64  `json:"downloads"`
+				DependentReposCount int    `json:"dependent_repos_count"`
+				RegistryURL         string `json:"registry_url"`
+				LatestReleaseNumber string `json:"latest_release_number"`
+			}
+			if err := json.Unmarshal(raw, &d); err != nil {
+				return fmt.Errorf("decode dependent: %w", err)
+			}
+			if d.PURL != "" {
+				if seen[d.PURL] {
+					continue
+				}
+				seen[d.PURL] = true
+			}
+			repoURL := d.RepositoryURL
+			if repoURL == "" {
+				repoURL = d.RepoMetadata.HTMLURL
+			}
+			rows = append(rows, db.Dependent{
+				RepositoryID:   repoID,
+				Name:           d.Name,
+				Ecosystem:      db.EcosystemType(d.PURL, d.Ecosystem),
+				PURL:           d.PURL,
+				RepositoryURL:  repoURL,
+				Downloads:      d.Downloads,
+				DependentRepos: d.DependentReposCount,
+				RegistryURL:    d.RegistryURL,
+				LatestVersion:  d.LatestReleaseNumber,
+			})
+		}
+	}
+	return gdb.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("repository_id = ?", repoID).Delete(&db.Dependent{}).Error; err != nil {
+			return fmt.Errorf("delete old dependents: %w", err)
+		}
+		if len(rows) > 0 {
+			if err := tx.CreateInBatches(&rows, insertBatchSize).Error; err != nil {
+				return fmt.Errorf("save dependents: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 func ecosystemsGet(ctx context.Context, endpoint string) ([]byte, error) {

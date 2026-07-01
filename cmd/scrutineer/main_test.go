@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/pem"
+	"flag"
 	"io"
 	"log/slog"
 	"os"
@@ -23,7 +24,7 @@ func fullConfig() *config.Config {
 		Addr:             "0.0.0.0:9090",
 		Data:             "/var/lib/scrutineer",
 		Effort:           "medium",
-		NoDocker:         new(true),
+		NoContainer:      new(true),
 		Hardened:         new(true),
 		RunnerImage:      "custom:v1",
 		SkillsRepo:       "https://example.com/skills.git",
@@ -47,8 +48,8 @@ func TestFlagsMerge_configFillsUnset(t *testing.T) {
 	if f.dataDir != cfg.Data {
 		t.Errorf("dataDir = %q", f.dataDir)
 	}
-	if !f.noDocker {
-		t.Errorf("noDocker not applied")
+	if !f.noContainer {
+		t.Errorf("noContainer not applied")
 	}
 	if !f.hardened {
 		t.Errorf("hardened not applied")
@@ -129,10 +130,76 @@ func TestFlagsMerge_hardenedCliWinsOverConfig(t *testing.T) {
 	}
 }
 
+func TestFlagsMerge_legacyNoDockerFlagHonored(t *testing.T) {
+	// The pre-rename --no-docker alias must behave exactly like --no-container:
+	// passing it on the CLI suppresses a conflicting config value. Both flags
+	// bind to the same variable, and merge checks both set-keys.
+	cfg := &config.Config{NoContainer: new(false)} // config wants the container ON
+	f := &flags{noContainer: true, set: map[string]bool{"no-docker": true}}
+	f.merge(cfg)
+	if !f.noContainer {
+		t.Error("legacy --no-docker on the CLI was overridden by config; the alias must win like --no-container")
+	}
+}
+
+func TestRegisterFlags_noContainerAliasParsesFromArgv(t *testing.T) {
+	// Both the canonical --no-container and the deprecated --no-docker alias
+	// must parse off the command line and set the same noContainer field, so
+	// existing `scrutineer --no-docker ...` invocations keep working.
+	for _, name := range []string{"--no-container", "--no-docker"} {
+		f := &flags{}
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		registerFlags(fs, f)
+		if err := fs.Parse([]string{name}); err != nil {
+			t.Fatalf("Parse(%q): %v", name, err)
+		}
+		if !f.noContainer {
+			t.Errorf("%s did not set noContainer", name)
+		}
+	}
+}
+
+func TestRegisterFlags_hardenedRuntimeOnlyAliasParsesFromArgv(t *testing.T) {
+	// Both the canonical --hardened-runtime-only and the deprecated
+	// --hardened-rootless-runtime alias must parse off the command line and set
+	// the same hardenedRuntimeOnly field, so existing
+	// `scrutineer --hardened-rootless-runtime ...` invocations keep working.
+	for _, name := range []string{"--hardened-runtime-only", "--hardened-rootless-runtime"} {
+		f := &flags{}
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		registerFlags(fs, f)
+		if err := fs.Parse([]string{name}); err != nil {
+			t.Fatalf("Parse(%q): %v", name, err)
+		}
+		if !f.hardenedRuntimeOnly {
+			t.Errorf("%s did not set hardenedRuntimeOnly", name)
+		}
+	}
+}
+
+func TestFlagsMerge_hardenedRuntimeOnlyConfigAlias(t *testing.T) {
+	// The deprecated hardened_rootless_runtime config key still applies when the
+	// canonical hardened_runtime_only is absent.
+	legacy := &flags{}
+	legacy.merge(&config.Config{HardenedRootlessRuntime: new(true)})
+	if !legacy.hardenedRuntimeOnly {
+		t.Error("deprecated config hardened_rootless_runtime was ignored")
+	}
+	// The canonical key takes precedence over the deprecated alias.
+	both := &flags{}
+	both.merge(&config.Config{HardenedRuntimeOnly: new(false), HardenedRootlessRuntime: new(true)})
+	if both.hardenedRuntimeOnly {
+		t.Error("hardened_runtime_only should take precedence over hardened_rootless_runtime")
+	}
+}
+
 func TestBuildEgressAllow_defaultIncludesConfigAndAnthropicHost(t *testing.T) {
 	cfg := &config.Config{EgressAllow: []string{"artifactory.internal", "*.mycorp.net"}}
-	allow := buildEgressAllow(false, cfg, "https://proxy.corp.com/v1", quietLog())
+	allow := buildEgressAllow(worker.ClaudeHarness{}.EgressHosts(), false, cfg, "https://proxy.corp.com/v1", quietLog())
 
+	if !slices.Contains(allow, "*.anthropic.com") {
+		t.Errorf("default mode dropped harness egress hosts: %v", allow)
+	}
 	if !slices.Contains(allow, "*.ecosyste.ms") {
 		t.Errorf("default mode dropped DefaultEgressAllow entries: %v", allow)
 	}
@@ -144,9 +211,9 @@ func TestBuildEgressAllow_defaultIncludesConfigAndAnthropicHost(t *testing.T) {
 	}
 }
 
-func TestBuildEgressAllow_hardenedDropsConfigKeepsAnthropic(t *testing.T) {
+func TestBuildEgressAllow_hardenedDropsConfigKeepsHarness(t *testing.T) {
 	cfg := &config.Config{EgressAllow: []string{"artifactory.internal"}}
-	allow := buildEgressAllow(true, cfg, "https://proxy.corp.com/v1", quietLog())
+	allow := buildEgressAllow(worker.ClaudeHarness{}.EgressHosts(), true, cfg, "https://proxy.corp.com/v1", quietLog())
 
 	if slices.Contains(allow, "*.ecosyste.ms") {
 		t.Errorf("hardened leaked DefaultEgressAllow entries: %v", allow)
@@ -154,7 +221,10 @@ func TestBuildEgressAllow_hardenedDropsConfigKeepsAnthropic(t *testing.T) {
 	if slices.Contains(allow, "artifactory.internal") {
 		t.Errorf("hardened honoured egress_allow when it must not: %v", allow)
 	}
-	if !slices.Contains(allow, "*.anthropic.com") || !slices.Contains(allow, worker.HostGatewayAlias) {
+	if !slices.Contains(allow, "*.anthropic.com") {
+		t.Errorf("hardened did not include the harness egress hosts: %v", allow)
+	}
+	if !slices.Contains(allow, worker.HostGatewayAlias) {
 		t.Errorf("hardened did not include HardenedEgressAllow entries: %v", allow)
 	}
 	if !slices.Contains(allow, "proxy.corp.com") {
@@ -163,9 +233,44 @@ func TestBuildEgressAllow_hardenedDropsConfigKeepsAnthropic(t *testing.T) {
 }
 
 func TestBuildEgressAllow_hardenedNilConfig(t *testing.T) {
-	allow := buildEgressAllow(true, nil, "", quietLog())
-	if len(allow) != len(worker.HardenedEgressAllow) {
-		t.Errorf("hardened minimal allow = %v, want exactly HardenedEgressAllow", allow)
+	harnessHosts := worker.ClaudeHarness{}.EgressHosts()
+	allow := buildEgressAllow(harnessHosts, true, nil, "", quietLog())
+	if len(allow) != len(harnessHosts)+len(worker.HardenedEgressAllow) {
+		t.Errorf("hardened minimal allow = %v, want exactly harness hosts + HardenedEgressAllow", allow)
+	}
+}
+
+func TestBuildEgressAllow_nonClaudeHarnessExcludesAnthropic(t *testing.T) {
+	// A non-claude harness must not inherit *.anthropic.com from the
+	// static lists; only the hosts it declares are added.
+	allow := buildEgressAllow([]string{"api.openai.com"}, true, nil, "", quietLog())
+	if slices.Contains(allow, "*.anthropic.com") {
+		t.Errorf("non-claude harness allowlist still contains anthropic: %v", allow)
+	}
+	if !slices.Contains(allow, "api.openai.com") {
+		t.Errorf("non-claude harness hosts not included: %v", allow)
+	}
+}
+
+func TestResolveEgressSidecar_NoSidecarForNonRootless(t *testing.T) {
+	// docker, rootful podman, and the zero (docker) runtime keep the in-process
+	// host proxy: resolveEgressSidecar returns the zero config (no sidecar), and
+	// without probing for a gateway. Only rootless podman gets a sidecar, which
+	// is covered end to end by the podman integration test.
+	f := &flags{addr: "127.0.0.1:8080", runnerImage: "img"}
+	for _, rt := range []worker.ContainerRuntime{
+		{Bin: "docker"},
+		{Bin: "podman"}, // rootful
+		{Bin: "apple"},  // apple -- hardened, but uses the host proxy, not a sidecar
+		{},              // zero value = docker
+	} {
+		got, err := resolveEgressSidecar(rt, f, []string{"x"}, "tok", quietLog())
+		if err != nil {
+			t.Errorf("runtime %+v: unexpected error: %v", rt, err)
+		}
+		if got.Token != "" || got.GatewayIP != "" || got.APIPort != "" || got.Allow != nil {
+			t.Errorf("runtime %+v: expected no sidecar config, got %+v", rt, got)
+		}
 	}
 }
 

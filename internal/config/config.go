@@ -29,12 +29,18 @@ type Config struct {
 	Models       []Model  `yaml:"models"`
 	Skills       []string `yaml:"skills"`
 	SkillsRepo   string   `yaml:"skills_repo"`
-	NoDocker     *bool    `yaml:"no_docker"`
-	// Runtime selects the container engine: "docker" (default) or "podman".
-	// Empty leaves the built-in default (docker). Rootless podman is detected
-	// automatically and gets --userns=keep-id so bind-mount output stays
-	// host-owned. There is no auto-detection: a podman-only host must set this
-	// (or pass --runtime podman) explicitly.
+	// NoContainer disables the containerised runner so claude runs directly on
+	// the host (no isolation). NoDocker is the pre-rename alias, still honoured
+	// so existing configs keep working; no_container wins when both are set
+	// (coalesced in Load).
+	NoContainer *bool `yaml:"no_container"`
+	NoDocker    *bool `yaml:"no_docker"`
+	// Runtime selects the container engine: "docker" (default), "podman", or
+	// "apple" (Apple's container runtime, experimental). Empty leaves the
+	// built-in default (docker). Rootless podman is detected automatically and gets
+	// --userns=keep-id so bind-mount output stays host-owned. There is no
+	// auto-detection: a non-docker host must set this (or pass --runtime)
+	// explicitly.
 	Runtime string `yaml:"runtime"`
 	// SELinux controls bind-mount relabeling for the container runner: "auto"
 	// (default/empty -- relabel only when SELinux is detected on the host), "on"
@@ -43,16 +49,18 @@ type Config struct {
 	// write its output. Non-SELinux hosts are unaffected. See docs/podman.md.
 	SELinux string `yaml:"selinux"`
 	// Hardened enforces the strictest sandbox mode: a container runtime is
-	// required (no --no-docker fallback), egress is restricted to
-	// *.anthropic.com plus host.docker.internal, the container rootfs is
-	// read-only, and the runner attaches to an internal network whose only
-	// route out is scrutineer's allowlisting proxy. egress_allow is ignored
-	// under hardened mode; the operator must drop hardened to widen it.
+	// required (no --no-container fallback), egress is restricted to the
+	// harness's model API plus the runtime's host endpoint, the container rootfs is
+	// read-only, and the runner attaches to an internal network whose only route
+	// out is scrutineer's allowlisting proxy. egress_allow is ignored under
+	// hardened mode; the operator must drop hardened to widen it.
 	Hardened *bool `yaml:"hardened"`
-	// HardenedRootlessRuntime applies the non-network half of hardened mode
+	// HardenedRuntimeOnly applies the non-network half of hardened mode
 	// (read-only rootfs + no-new-privileges + the 2 GiB post-clone workspace cap)
 	// without the per-scan --internal network, so it works under rootless podman
 	// where full --hardened does not. See docs/podman.md.
+	HardenedRuntimeOnly *bool `yaml:"hardened_runtime_only"`
+	// HardenedRootlessRuntime is the deprecated alias for HardenedRuntimeOnly.
 	HardenedRootlessRuntime *bool  `yaml:"hardened_rootless_runtime"`
 	RunnerImage             string `yaml:"runner_image"`
 	ProfilesDir             string `yaml:"profiles_dir"`
@@ -102,6 +110,10 @@ type Config struct {
 	// IdentityFile is an age identity file or SSH private key used to
 	// decrypt encrypted imports. Empty disables encrypted import.
 	IdentityFile string `yaml:"identity_file"`
+	// AutoRejectMissedCount is the threshold of consecutive missed rescans at
+	// which an open finding is automatically transitioned to 'rejected'.
+	// 0 (the default) means this feature is disabled.
+	AutoRejectMissedCount int `yaml:"auto_reject_missed_count"`
 }
 
 // ParseScanTimeout validates and parses a scan_timeout string. Empty
@@ -132,14 +144,15 @@ func ValidateClone(s string) error {
 	}
 }
 
-// ValidateRuntime returns an error when s is neither empty, "docker", nor
-// "podman". Exposed so the CLI flag can use the same rule as the YAML field.
+// ValidateRuntime returns an error when s is neither empty, "docker", "podman",
+// nor "apple". Exposed so the CLI flag can use the same rule as the YAML
+// field.
 func ValidateRuntime(s string) error {
 	switch s {
-	case "", "docker", "podman":
+	case "", "docker", "podman", "apple":
 		return nil
 	default:
-		return fmt.Errorf("runtime: must be \"docker\" or \"podman\", got %q", s)
+		return fmt.Errorf("runtime: must be \"docker\", \"podman\", or \"apple\", got %q", s)
 	}
 }
 
@@ -207,6 +220,11 @@ func Load(path string) (*Config, error) {
 	var c Config
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	// no_container is the canonical key; no_docker is the retained alias.
+	// Fold the alias into NoContainer so the rest of the code reads one field.
+	if c.NoContainer == nil {
+		c.NoContainer = c.NoDocker
 	}
 	if err := ValidateClone(c.Clone); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)

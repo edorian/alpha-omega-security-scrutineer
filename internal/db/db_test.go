@@ -9,6 +9,73 @@ import (
 	"testing"
 )
 
+func TestRetireDependentsSkill(t *testing.T) {
+	gdb, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []Skill{
+		{Name: "dependents", Source: "local", Active: true},
+		{Name: "dependents-remote", Source: "local", Active: true},
+	}
+	for i := range rows {
+		if err := gdb.Create(&rows[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := RetireDependentsSkill(gdb); err != nil {
+		t.Fatalf("retire dependents skill: %v", err)
+	}
+
+	got := map[string]bool{}
+	var skills []Skill
+	gdb.Order("name, source").Find(&skills)
+	for _, sk := range skills {
+		got[sk.Name+"/"+sk.Source] = sk.Active
+	}
+	if got["dependents/local"] {
+		t.Error("local dependents skill should be inactive")
+	}
+	if !got["dependents-remote/local"] {
+		t.Error("unrelated local skill should stay active")
+	}
+
+	remoteDB, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := Skill{Name: "dependents", Source: "remote", Active: true}
+	if err := remoteDB.Create(&remote).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := RetireDependentsSkill(remoteDB); err != nil {
+		t.Fatalf("retire remote fixture: %v", err)
+	}
+	var loaded Skill
+	if err := remoteDB.First(&loaded, remote.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Active {
+		t.Error("remote dependents skill should stay active")
+	}
+}
+
+func TestSQLStringLiteral(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"security-deep-dive", "'security-deep-dive'"},
+		{"", "''"},
+		{"o'brien", "'o''brien'"},
+		{"a'b'c", "'a''b''c'"},
+		{"'; DROP TABLE findings;--", "'''; DROP TABLE findings;--'"},
+	}
+	for _, c := range cases {
+		if got := SQLStringLiteral(c.in); got != c.want {
+			t.Errorf("SQLStringLiteral(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.db")

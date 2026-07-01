@@ -43,7 +43,7 @@ type Repository struct {
 	FetchedAt     *time.Time
 
 	// Ecosystems* hold raw ecosyste.ms payloads pre-fetched server-side so
-	// the metadata/packages/advisories/maintainers/dependents skills can read
+	// metadata/packages/advisories/maintainers skills can read
 	// a known URL from the API instead of issuing a WebFetch and carrying the
 	// payload across every turn. Each Data column mirrors the Metadata
 	// blob pattern above; the paired FetchedAt drives the per-source TTL
@@ -357,10 +357,20 @@ func (s FindingLifecycle) Closed() bool {
 	return slices.Contains(ClosedFindingLifecycles, s)
 }
 
+// SQLStringLiteral renders s as a single-quoted SQL string literal, doubling
+// any embedded single quote. It is for splicing a TRUSTED CONSTANT into a
+// query fragment that cannot take a bind parameter — e.g. a correlated
+// subquery used inside an ORDER BY. It is defence-in-depth against a constant
+// later gaining a quote, NOT a licence to interpolate user input: anything
+// reachable from a request must still go through a `?` placeholder.
+func SQLStringLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
 func ClosedFindingLifecycleSQLValues() string {
 	values := make([]string, 0, len(ClosedFindingLifecycles))
 	for _, status := range ClosedFindingLifecycles {
-		values = append(values, "'"+strings.ReplaceAll(string(status), "'", "''")+"'")
+		values = append(values, SQLStringLiteral(string(status)))
 	}
 	return strings.Join(values, ", ")
 }
@@ -385,7 +395,7 @@ type Advisory struct {
 }
 
 // Dependent is a package that depends on one of this repo's packages.
-// Populated by the dependents job from packages.ecosyste.ms.
+// Populated by the ecosystems dependents prefetch from packages.ecosyste.ms.
 type Dependent struct {
 	ID           uint `gorm:"primarykey"`
 	RepositoryID uint `gorm:"index;not null"`
@@ -443,6 +453,7 @@ const (
 	SourceTool    FindingSource = "tool"
 	SourceModel   FindingSource = "model_suggested"
 	SourceAnalyst FindingSource = "analyst"
+	SourceSystem  FindingSource = "system"
 )
 
 // Finding is one vulnerability reported by a scan. The Finding row holds
@@ -896,7 +907,7 @@ type Skill struct {
 	// worker re-queues a job whose prereqs are not yet satisfied; see
 	// worker.preflightSkill. A prereq that is unregistered, disabled, or
 	// never enqueued for the repo is treated as satisfied so gating
-	// decisions in triage do not deadlock dependents.
+	// decisions in triage do not deadlock dependent skills.
 	Requires string `gorm:"type:text"`
 
 	Source     string // "local" | "remote" | "ui"
@@ -905,6 +916,16 @@ type Skill struct {
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// RetireDependentsSkill deactivates the removed bundled dependents skill on
+// upgraded instances. LoadDirectory upserts active skills but does not prune
+// directories that disappeared from the bundled set, so the old local row would
+// otherwise stay clickable in the UI.
+func RetireDependentsSkill(gdb *gorm.DB) error {
+	return gdb.Model(&Skill{}).
+		Where("name = ? AND source = ?", "dependents", "local").
+		Update("active", false).Error
 }
 
 func (s Scan) Duration() time.Duration {

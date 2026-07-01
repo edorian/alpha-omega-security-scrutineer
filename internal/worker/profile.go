@@ -387,13 +387,14 @@ func DetectProfile(ctx context.Context, rt ContainerRuntime, runnerImage, srcDir
 	if err != nil {
 		return Profile{}
 	}
-	cmd := exec.CommandContext(ctx, rt.bin(), "run", "--rm",
+	args := rt.runArgs("--rm",
 		"--network", "none",
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-v", bindMount(absSrc, "/src", relabel, "ro"),
 		"--entrypoint", "brief",
 		runnerImage, "/src",
 	)
+	cmd := exec.CommandContext(ctx, rt.bin(), args...)
 	out, err := cmd.Output()
 	if err != nil {
 		// Marker-only profiles can still match when brief is unavailable.
@@ -407,7 +408,7 @@ func DetectProfile(ctx context.Context, rt ContainerRuntime, runnerImage, srcDir
 // deployment). The caller falls back to the default runner image.
 var ErrNoProfilesDir = errors.New("profiles dir not configured")
 
-// profileBuildLocks serialises `docker build` per image tag. Two scans
+// profileBuildLocks serialises the image build per tag. Two scans
 // that both detect the same profile must not race on the local image
 // cache. One mutex per tag avoids serialising builds of distinct
 // profiles.
@@ -454,22 +455,30 @@ func imageTag(profileName string, dockerfile []byte, runnerImage, baseDigest str
 // currently resolves in the registry, so a moved tag (notably the default
 // :latest) produces a new profile tag and forces a rebuild against the new
 // base instead of reusing a months-old cached profile image. On docker it
-// shells out to `docker buildx imagetools inspect --raw`; on podman, which has
-// no buildx, it uses `skopeo inspect --raw` when skopeo is installed. Both
-// fetch the canonical manifest bytes without pulling layers. Best-effort:
+// shells out to `docker buildx imagetools inspect --raw`; on runtimes without
+// buildx (podman and Apple's container), it uses `skopeo inspect --raw` when
+// skopeo is installed. Both fetch the canonical manifest bytes without pulling
+// layers. Best-effort:
 // returns "" when the tool is unavailable, the registry is unreachable, or the
 // ref is local-only (e.g. scrutineer-runner:local), so imageTag falls back to
 // keying on the ref string alone rather than blocking the scan.
+//
+// remoteRunnerDigest (the runner-image staleness check) is the other caller; it
+// prepends "sha256:" and compares the result against the local RepoDigest. That
+// only holds because this hashes the canonical manifest bytes, which is exactly
+// what a registry records as a tag's digest -- keep it that way (don't switch to
+// a config or layer digest) or the staleness banner silently mis-fires.
 func resolveBaseDigest(ctx context.Context, rt ContainerRuntime, runnerImage string) string {
 	if runnerImage == "" {
 		return ""
 	}
 	var out []byte
 	var err error
-	if rt.Bin == "podman" {
-		// podman has no `buildx imagetools`; skopeo fetches the same canonical
-		// manifest bytes without pulling layers. "" when skopeo is absent, so
-		// the caller keeps the ref-string fallback (no new failure mode).
+	if rt.Bin == runtimePodman || rt.Bin == runtimeApple {
+		// podman and Apple's container CLI have no `buildx imagetools`; skopeo
+		// fetches the same canonical manifest bytes without pulling layers. ""
+		// when skopeo is absent, so the caller keeps the ref-string fallback
+		// (no new failure mode).
 		if _, lookErr := exec.LookPath("skopeo"); lookErr != nil {
 			return ""
 		}
@@ -484,12 +493,12 @@ func resolveBaseDigest(ctx context.Context, rt ContainerRuntime, runnerImage str
 	return hex.EncodeToString(sum[:])
 }
 
-// EnsureImage builds the profile's Docker image if it is not in the
-// local cache and returns the tag to pass to `docker run`. The
+// EnsureImage builds the profile's container image if it is not in the
+// local cache and returns the tag to pass to the runtime's `run`. The
 // `--build-arg RUNNER_IMAGE=...` is wired so the profile's FROM picks
 // up whichever runner image the operator configured. Concurrency-safe:
 // a per-tag mutex serialises duplicate builds. emit is called only on
-// a cache miss (before and after the docker build) so the scan log
+// a cache miss (before and after the image build) so the scan log
 // shows progress during a multi-minute first build.
 func (p Profile) EnsureImage(ctx context.Context, rt ContainerRuntime, profilesDir, runnerImage string, emit func(Event)) (string, error) {
 	if p.IsDefault() {

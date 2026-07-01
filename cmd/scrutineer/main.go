@@ -39,7 +39,7 @@ import (
 var commit string
 
 // buildCommit reports the commit scrutineer was built from. It prefers the
-// ldflags-injected value (set in the Docker build, where .git is excluded
+// ldflags-injected value (set in the container image build, where .git is excluded
 // from the context so the VCS stamp is unavailable) and otherwise reads the
 // vcs.revision the Go toolchain records during a normal local build.
 func buildCommit() string {
@@ -87,31 +87,32 @@ func main() {
 // parseFlags fills defaults and CLI overrides; merge layers the config
 // file underneath any flag the user set explicitly.
 type flags struct {
-	configPath       string
-	addr             string
-	dataDir          string
-	effort           string
-	defaultModel     string
-	noDocker         bool
-	runtime          string
-	selinux          string
-	hardened         bool
-	hardenedRootless bool
-	runnerImage      string
-	profilesDir      string
-	skillsRepo       string
-	concurrency      int
-	cloneMode        string
-	scanTimeout      time.Duration
-	smokeTimeout     time.Duration
-	maxTurns         int
-	anthropicBaseURL string
-	forkOrg          string
-	metadataDir      string
-	schemaStrict     bool
-	recipientsFile   string
-	identityFile     string
-	skillLocal       skillDirs
+	configPath            string
+	addr                  string
+	dataDir               string
+	effort                string
+	defaultModel          string
+	noContainer           bool
+	runtime               string
+	selinux               string
+	hardened              bool
+	hardenedRuntimeOnly   bool
+	runnerImage           string
+	profilesDir           string
+	skillsRepo            string
+	concurrency           int
+	cloneMode             string
+	scanTimeout           time.Duration
+	smokeTimeout          time.Duration
+	maxTurns              int
+	anthropicBaseURL      string
+	forkOrg               string
+	metadataDir           string
+	schemaStrict          bool
+	recipientsFile        string
+	identityFile          string
+	autoRejectMissedCount int
+	skillLocal            skillDirs
 
 	// set records which flags were passed on the command line so merge
 	// knows not to let the config file override them.
@@ -120,34 +121,44 @@ type flags struct {
 
 func parseFlags() *flags {
 	f := &flags{}
-	flag.StringVar(&f.configPath, "config", "", "path to YAML config file (default: ./scrutineer.yaml if present)")
-	flag.StringVar(&f.addr, "addr", "127.0.0.1:8080", "listen address")
-	flag.StringVar(&f.dataDir, "data", "./data", "data directory (db + workspaces)")
-	flag.StringVar(&f.effort, "effort", "high", "claude effort")
-	flag.StringVar(&f.runtime, "runtime", "docker", "container runtime: docker or podman (rootless podman supported)")
-	flag.StringVar(&f.selinux, "selinux", "auto", "SELinux bind-mount relabeling: auto (relabel when SELinux is detected on the host), on (always), off (never). Relabeling (\":z\") lets the container read /work and write its output on enforcing-SELinux hosts")
-	flag.BoolVar(&f.noDocker, "no-docker", false, "disable containerised runner even if a container runtime is available")
-	flag.BoolVar(&f.hardened, "hardened", false, "strict sandbox mode: container runtime required (no --no-docker fallback), egress restricted to *.anthropic.com + host skill API, read-only rootfs, internal network")
-	flag.BoolVar(&f.hardenedRootless, "hardened-rootless-runtime", false, "the non-network half of --hardened (read-only rootfs + no-new-privileges + 2 GiB post-clone workspace cap) WITHOUT the per-scan --internal network, so it works under rootless podman where --hardened cannot; --cap-drop ALL + non-root user + tmpfs apply regardless. Implied by --hardened")
-	flag.StringVar(&f.runnerImage, "runner-image", worker.DefaultRunnerImage, "docker image for per-job containers")
-	flag.StringVar(&f.profilesDir, "profiles-dir", "docker/profiles", "directory containing per-ecosystem runner profiles (Dockerfile per profile); empty disables profiles")
-	flag.StringVar(&f.skillsRepo, "skills-repo", "", "clone skills on startup; owner/repo[@ref] or https://host/path[@ref]")
-	flag.IntVar(&f.concurrency, "concurrency", queue.DefaultWorkerConcurrency, "number of scans to run in parallel")
-	flag.StringVar(&f.cloneMode, "clone", "shallow", "clone depth: shallow (--depth 1) or full")
-	flag.DurationVar(&f.scanTimeout, "scan-timeout", worker.DefaultScanTimeout, "wall-clock limit per scan")
-	flag.DurationVar(&f.smokeTimeout, "runtime-smoke-timeout", defaultRuntimeSmokeTimeout, "timeout for each rootless-podman startup container check (keep-id image remap, SELinux mount probe); raise if first-run image remapping is slow, lower if the image is pre-warmed")
-	flag.IntVar(&f.maxTurns, "max-turns", 0, "claude --max-turns limit (0 = unlimited)")
-	flag.StringVar(&f.anthropicBaseURL, "anthropic-base-url", "", "custom Anthropic API base URL (env: ANTHROPIC_BASE_URL)")
-	flag.StringVar(&f.forkOrg, "fork-org", "", "GitHub org the fork skill forks into and files draft advisories against")
-	flag.BoolVar(&f.schemaStrict, "schema-strict", false, "fail scans whose report.json does not validate against the skill's schema (default: warn and continue)")
-	flag.StringVar(&f.recipientsFile, "recipients-file", "", "age recipients file (public keys) for encrypted export")
-	flag.StringVar(&f.identityFile, "identity-file", "", "age identity file or SSH private key for decrypting imports")
-	flag.Var(&f.skillLocal, "skills", "directory to load SKILL.md files from (repeatable)")
+	registerFlags(flag.CommandLine, f)
 	flag.Parse()
 
 	f.set = make(map[string]bool)
 	flag.Visit(func(fl *flag.Flag) { f.set[fl.Name] = true })
 	return f
+}
+
+// registerFlags binds every CLI flag onto fs. Split out of parseFlags so a
+// test can parse a synthetic argv against a throwaway FlagSet -- in particular
+// to prove the deprecated --no-docker alias still maps onto noContainer.
+func registerFlags(fs *flag.FlagSet, f *flags) {
+	fs.StringVar(&f.configPath, "config", "", "path to YAML config file (default: ./scrutineer.yaml if present)")
+	fs.StringVar(&f.addr, "addr", "127.0.0.1:8080", "listen address")
+	fs.StringVar(&f.dataDir, "data", "./data", "data directory (db + workspaces)")
+	fs.StringVar(&f.effort, "effort", "high", "claude effort")
+	fs.StringVar(&f.runtime, "runtime", "docker", "container runtime: docker, podman (rootless supported), or apple (Apple, experimental)")
+	fs.StringVar(&f.selinux, "selinux", "auto", "SELinux bind-mount relabeling: auto (relabel when SELinux is detected on the host), on (always), off (never). Relabeling (\":z\") lets the container read /work and write its output on enforcing-SELinux hosts")
+	fs.BoolVar(&f.noContainer, "no-container", false, "disable the containerised runner and run claude directly on the host (no isolation), even if a container runtime is available")
+	fs.BoolVar(&f.noContainer, "no-docker", false, "deprecated alias for --no-container")
+	fs.BoolVar(&f.hardened, "hardened", false, "strict sandbox mode: container runtime required (no --no-container fallback), egress restricted to the harness's model API + host skill API, read-only rootfs, internal network")
+	fs.BoolVar(&f.hardenedRuntimeOnly, "hardened-runtime-only", false, "the non-network half of --hardened (read-only rootfs + no-new-privileges + 2 GiB post-clone workspace cap) WITHOUT the per-scan --internal network, so it works under rootless podman where --hardened cannot; --cap-drop ALL + non-root user + tmpfs apply regardless. Implied by --hardened")
+	fs.BoolVar(&f.hardenedRuntimeOnly, "hardened-rootless-runtime", false, "deprecated alias for --hardened-runtime-only")
+	fs.StringVar(&f.runnerImage, "runner-image", worker.DefaultRunnerImage, "container image for per-job containers (a custom image needs curl, and under rootless --hardened the scrutineer binary for the egress sidecar; build from Dockerfile.runner)")
+	fs.StringVar(&f.profilesDir, "profiles-dir", "docker/profiles", "directory containing per-ecosystem runner profiles (Dockerfile per profile); empty disables profiles")
+	fs.StringVar(&f.skillsRepo, "skills-repo", "", "clone skills on startup; owner/repo[@ref] or https://host/path[@ref]")
+	fs.IntVar(&f.concurrency, "concurrency", queue.DefaultWorkerConcurrency, "number of scans to run in parallel")
+	fs.StringVar(&f.cloneMode, "clone", "shallow", "clone depth: shallow (--depth 1) or full")
+	fs.DurationVar(&f.scanTimeout, "scan-timeout", worker.DefaultScanTimeout, "wall-clock limit per scan")
+	fs.DurationVar(&f.smokeTimeout, "runtime-smoke-timeout", defaultRuntimeSmokeTimeout, "timeout for each rootless-podman startup container check (keep-id image remap, SELinux mount probe); raise if first-run image remapping is slow, lower if the image is pre-warmed")
+	fs.IntVar(&f.maxTurns, "max-turns", 0, "claude --max-turns limit (0 = unlimited)")
+	fs.StringVar(&f.anthropicBaseURL, "anthropic-base-url", "", "custom Anthropic API base URL (env: ANTHROPIC_BASE_URL)")
+	fs.StringVar(&f.forkOrg, "fork-org", "", "GitHub org the fork skill forks into and files draft advisories against")
+	fs.BoolVar(&f.schemaStrict, "schema-strict", false, "fail scans whose report.json does not validate against the skill's schema (default: warn and continue)")
+	fs.StringVar(&f.recipientsFile, "recipients-file", "", "age recipients file (public keys) for encrypted export")
+	fs.StringVar(&f.identityFile, "identity-file", "", "age identity file or SSH private key for decrypting imports")
+	fs.IntVar(&f.autoRejectMissedCount, "auto-reject-missed-count", 0, "auto-reject findings after this many consecutive missed rescans (0 disables)")
+	fs.Var(&f.skillLocal, "skills", "directory to load SKILL.md files from (repeatable)")
 }
 
 // merge layers cfg underneath f: a config value applies only when the
@@ -166,8 +177,8 @@ func (f *flags) merge(cfg *config.Config) {
 	if cfg.Effort != "" && !f.set["effort"] {
 		f.effort = cfg.Effort
 	}
-	if cfg.NoDocker != nil && !f.set["no-docker"] {
-		f.noDocker = *cfg.NoDocker
+	if cfg.NoContainer != nil && !f.set["no-container"] && !f.set["no-docker"] {
+		f.noContainer = *cfg.NoContainer
 	}
 	if cfg.Runtime != "" && !f.set["runtime"] {
 		f.runtime = cfg.Runtime
@@ -178,8 +189,13 @@ func (f *flags) merge(cfg *config.Config) {
 	if cfg.Hardened != nil && !f.set["hardened"] {
 		f.hardened = *cfg.Hardened
 	}
-	if cfg.HardenedRootlessRuntime != nil && !f.set["hardened-rootless-runtime"] {
-		f.hardenedRootless = *cfg.HardenedRootlessRuntime
+	// hardened_runtime_only, with the deprecated hardened_rootless_runtime alias.
+	cfgRuntimeOnly := cfg.HardenedRuntimeOnly
+	if cfgRuntimeOnly == nil {
+		cfgRuntimeOnly = cfg.HardenedRootlessRuntime
+	}
+	if cfgRuntimeOnly != nil && !f.set["hardened-runtime-only"] && !f.set["hardened-rootless-runtime"] {
+		f.hardenedRuntimeOnly = *cfgRuntimeOnly
 	}
 	if cfg.RunnerImage != "" && !f.set["runner-image"] {
 		f.runnerImage = cfg.RunnerImage
@@ -222,6 +238,9 @@ func (f *flags) merge(cfg *config.Config) {
 	}
 	if cfg.IdentityFile != "" && !f.set["identity-file"] {
 		f.identityFile = cfg.IdentityFile
+	}
+	if cfg.AutoRejectMissedCount > 0 && !f.set["auto-reject-missed-count"] {
+		f.autoRejectMissedCount = cfg.AutoRejectMissedCount
 	}
 
 	if len(cfg.Models) > 0 {
@@ -325,7 +344,7 @@ func run(log *slog.Logger) error {
 	}
 
 	// Suppress claude-code's telemetry, error reporting, auto-updater and
-	// feedback command, and semgrep's metrics POST. The docker runner sets
+	// feedback command, and semgrep's metrics POST. The container runner sets
 	// these on the container too; setting them here covers the local
 	// runner, which inherits host env. The egress proxy already blocks the
 	// hosts these reach (DataDog log-intake, metrics.semgrep.dev) so
@@ -338,7 +357,7 @@ func run(log *slog.Logger) error {
 	}
 	// LocalClaude inherits the host env, so writing the resolved value
 	// back here is what makes flag/config precedence apply on the local
-	// runner path. DockerRunner gets it explicitly via its struct field.
+	// runner path. ContainerRunner gets it explicitly via its struct field.
 	if f.anthropicBaseURL != "" {
 		_ = os.Setenv("ANTHROPIC_BASE_URL", f.anthropicBaseURL)
 	}
@@ -391,6 +410,7 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	retireRemovedSkills(log, gdb)
 
 	go func() {
 		if n, err := worker.SyncCNAs(context.Background(), gdb, ""); err != nil {
@@ -408,15 +428,16 @@ func run(log *slog.Logger) error {
 	}
 
 	w := &worker.Worker{
-		DB:           gdb,
-		Log:          log,
-		DataDir:      filepath.Join(f.dataDir, "work"),
-		APIBase:      apiBase,
-		ForkOrg:      f.forkOrg,
-		MetadataDir:  f.metadataDir,
-		Runner:       runner,
-		ScanTimeout:  f.scanTimeout,
-		SchemaStrict: f.schemaStrict,
+		DB:                    gdb,
+		Log:                   log,
+		DataDir:               filepath.Join(f.dataDir, "work"),
+		APIBase:               apiBase,
+		ForkOrg:               f.forkOrg,
+		MetadataDir:           f.metadataDir,
+		Runner:                runner,
+		ScanTimeout:           f.scanTimeout,
+		SchemaStrict:          f.schemaStrict,
+		AutoRejectMissedCount: f.autoRejectMissedCount,
 		OnEvent: func(scanID, repoID uint, name, data string) {
 			broker.Publish(web.Event{Name: name, Data: data, ScanID: scanID, RepoID: repoID})
 		},
@@ -465,11 +486,46 @@ func run(log *slog.Logger) error {
 		_ = httpSrv.Shutdown(sctx)
 	}()
 
+	// Notice (but never pull) a stale runner image. Runs in the background so a
+	// slow or unreachable registry can't delay startup, and fails soft to
+	// silence -- see issue #337. A genuine auto-update is left to the operator
+	// (watchtower or `--pull=always`); this only surfaces the drift.
+	go checkRunnerImage(srv, runner, log)
+
 	log.Info("listening", "addr", "http://"+f.addr)
 	if err := httpSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+func retireRemovedSkills(log *slog.Logger, gdb *gorm.DB) {
+	if err := db.RetireDependentsSkill(gdb); err != nil {
+		log.Warn("retire dependents skill failed", "err", err)
+	}
+}
+
+// checkRunnerImage compares the pulled runner image against the registry and,
+// when it is stale (a newer build exists and the local one is past the age
+// threshold), logs a one-line nag and records the result so the Settings page
+// can show a banner. It is deliberately quiet otherwise: a fresh image, a host
+// without a container runtime, or an unreachable registry all produce no output.
+func checkRunnerImage(srv *web.Server, runner worker.SkillRunner, log *slog.Logger) {
+	image := worker.RunnerImageName(runner)
+	if image == "" {
+		return // --no-container: no fixed image to compare against.
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), worker.RunnerStalenessTimeout)
+	defer cancel()
+	status, ok := worker.RunnerImageStaleness(ctx, worker.RuntimeOf(runner), image)
+	if !ok {
+		return // couldn't reach a verdict (registry down, image not pulled, ...): stay silent.
+	}
+	srv.SetRunnerImageStatus(status)
+	if status.Stale {
+		log.Warn("runner image is stale; update to pick up newer analysis tools",
+			"image", image, "age_days", status.AgeDays, "update", status.PullCommand)
+	}
 }
 
 // loadSkills loads local skill directories and, if a remote skills repo is
@@ -532,23 +588,24 @@ func hashPath(s string) string {
 const defaultRuntimeSmokeTimeout = 5 * time.Minute
 
 // setupRunner picks the SkillRunner implementation for the run loop:
-// DockerRunner (docker or podman) when a container runtime is in use,
+// ContainerRunner (docker, podman, or Apple's container) when a container runtime is in use,
 // LocalClaude otherwise. It also starts the egress proxy, sweeps stale hardened
 // networks, runs the rootless keep-id smoke test, and returns the apiBase the
-// worker advertises to skills (the container path rewrites it to
-// host.docker.internal so containers can reach the loopback-bound web server).
+// worker advertises to skills (the container path rewrites it to the selected
+// runtime's host endpoint so containers can reach the loopback-bound web
+// server through the egress proxy).
 //
-//nolint:ireturn // dispatched on f.noDocker; concrete types live in the worker pkg
+//nolint:ireturn // dispatched on f.noContainer; concrete types live in the worker pkg
 func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRunner, string, error) {
 	apiBase := "http://" + f.addr + "/api"
-	if f.hardened && f.noDocker {
-		return nil, "", fmt.Errorf("--hardened requires a container runtime; remove --no-docker")
+	if f.hardened && f.noContainer {
+		return nil, "", fmt.Errorf("--hardened requires a container runtime; remove --no-container")
 	}
-	if f.hardenedRootless && f.noDocker {
-		log.Warn("--hardened-rootless-runtime has no effect with --no-docker (no container to harden)")
+	if f.hardenedRuntimeOnly && f.noContainer {
+		log.Warn("--hardened-runtime-only has no effect with --no-container (no container to harden)")
 	}
-	if f.noDocker {
-		log.Info("--no-docker set, using local runner (no isolation)")
+	if f.noContainer {
+		log.Info("--no-container set, using local runner (no isolation)")
 		return worker.LocalClaude{Effort: f.effort, FullClone: f.fullClone(), MaxTurns: f.maxTurns}, apiBase, nil
 	}
 	rt, ok := worker.DetectRuntime(f.runtime)
@@ -556,7 +613,18 @@ func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRu
 		if f.hardened {
 			return nil, "", fmt.Errorf("%s not available: --hardened requires a container runtime, install and start it", f.runtime)
 		}
-		return nil, "", fmt.Errorf("%s not available: install and start it, or pass --no-docker to run without containerisation (no isolation)", f.runtime)
+		return nil, "", fmt.Errorf("%s not available: install and start it, or pass --no-container to run without containerisation (no isolation)", f.runtime)
+	}
+	if err := rt.HardeningSupportError(f.hardenedRuntimeOnly); err != nil {
+		return nil, "", err
+	}
+	if rt.Bin == "apple" {
+		log.Warn("Apple container runtime support is experimental", "version", rt.Version)
+		if f.hardened {
+			log.Info("Apple hardened mode: per-container VM boundary substitutes for " +
+				"--security-opt no-new-privileges (not exposed by Apple's CLI); the " +
+				"per-scan --internal network is verified fail-closed before each scan")
+		}
 	}
 	// Older podman lacks the host-gateway alias the egress path needs; warn
 	// rather than fail since the hardened path verifies reachability per-scan.
@@ -587,66 +655,154 @@ func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRu
 	if err := worker.VerifySELinuxMount(selinuxCtx, rt, f.runnerImage, relabel); err != nil {
 		return nil, "", err
 	}
-	allow := buildEgressAllow(f.hardened, cfg, f.anthropicBaseURL, log)
+	gwIP, apiHost, err := resolveScanNetworking(rt, f, log)
+	if err != nil {
+		return nil, "", err
+	}
+	// The harness is resolved here, before the egress allowlist, so its
+	// model-API hosts are on the proxy from the start. With no -backend
+	// flag yet (#211) it is always claude; once the flag exists this
+	// becomes a name lookup and nothing downstream changes.
+	h := worker.ClaudeHarness{}
+	var egress worker.EgressSidecarConfig
+	allow := buildEgressAllow(h.EgressHosts(), f.hardened, cfg, f.anthropicBaseURL, log)
+	if apiHost != worker.HostGatewayAlias {
+		allow = append(allow, apiHost)
+	}
 	token := worker.NewProxyToken()
-	port, err := worker.StartEgressProxy(&worker.EgressProxy{Allow: allow, Token: token, APIPort: addrPort(f.addr), Log: log})
+	port, err := worker.StartEgressProxy(&worker.EgressProxy{
+		Allow:    allow,
+		Token:    token,
+		APIPort:  addrPort(f.addr),
+		APIHosts: []string{apiHost},
+		Log:      log,
+	})
 	if err != nil {
 		return nil, "", fmt.Errorf("start egress proxy: %w", err)
 	}
-	// Hardened mode owns its per-scan networks, so the gateway IP must be
-	// probed inside RunSkill against the network the runner is about to attach
-	// to. Probing once here would point every scan at whichever network
-	// happened to be probed first. The startup sweep collects per-scan networks
-	// left over by crashed processes.
-	var gwIP string
+	// Rootless --hardened runs the egress proxy as a sidecar reusing the host
+	// proxy's allow-list and token, so resolve its config now that both exist.
 	if f.hardened {
-		if removed, err := worker.SweepOrphanHardenedNetworks(rt); err != nil {
-			log.Warn("orphan hardened network sweep failed", "err", err)
-		} else if removed > 0 {
-			log.Info("removed orphan hardened networks", "count", removed)
-		}
-	} else {
-		gwIP = worker.ResolveHostGatewayIPv4(rt, f.runnerImage, "")
-		if rt.Bin == "podman" && gwIP == "" {
-			// Reuses the resolve probe just run (no extra launch). An empty
-			// result means host-gateway is not wired, so containers cannot reach
-			// the host egress proxy and scans will fail with network errors --
-			// surface the likely cause now rather than once per scan.
-			log.Warn("host-gateway did not resolve under podman; scans may fail to " +
-				"reach the network because the container cannot reach the host egress " +
-				"proxy (needs podman >= 4.7; see docs/podman.md)")
+		egress, err = resolveEgressSidecar(rt, f, allow, token, log)
+		if err != nil {
+			return nil, "", err
 		}
 	}
 	log.Info("container runtime detected, using containerised runner",
 		"runtime", rt.Bin, "rootless", rt.Rootless, "image", f.runnerImage,
 		"egress_proxy_port", port, "egress_allow", len(allow),
-		"host_gateway_ipv4", gwIP, "hardened", f.hardened,
-		"hardened_rootless_runtime", f.hardenedRootless, "selinux_relabel", relabel)
-	// Skills inside the container reach the host via host.docker.internal,
-	// which the egress proxy rewrites to 127.0.0.1 when dialing.
-	apiBase = "http://" + net.JoinHostPort(worker.HostGatewayAlias, addrPort(f.addr)) + "/api"
-	return worker.DockerRunner{
-		Image:                   f.runnerImage,
-		Effort:                  f.effort,
-		ProxyURL:                worker.ProxyURL(token, port),
-		FullClone:               f.fullClone(),
-		MaxTurns:                f.maxTurns,
-		AnthropicBaseURL:        f.anthropicBaseURL,
-		HostGatewayIP:           gwIP,
-		ProfilesDir:             f.profilesDir,
-		Hardened:                f.hardened,
-		HardenedRootlessRuntime: f.hardenedRootless,
-		Runtime:                 rt,
-		SELinuxRelabel:          relabel,
+		"container_host", apiHost, "host_gateway_ipv4", gwIP, "hardened", f.hardened,
+		"egress_sidecar", egress.GatewayIP != "",
+		"hardened_runtime_only", f.hardenedRuntimeOnly, "selinux_relabel", relabel)
+	// Skills inside the container reach the host via the runtime's host endpoint,
+	// which the egress proxy rewrites to 127.0.0.1 when dialing the app.
+	apiBase = "http://" + net.JoinHostPort(apiHost, addrPort(f.addr)) + "/api"
+	return worker.ContainerRunner{
+		Image:               f.runnerImage,
+		Effort:              f.effort,
+		Harness:             h,
+		ProxyURL:            worker.ProxyURLForHost(token, apiHost, port),
+		FullClone:           f.fullClone(),
+		MaxTurns:            f.maxTurns,
+		AnthropicBaseURL:    f.anthropicBaseURL,
+		HostGatewayIP:       gwIP,
+		ProfilesDir:         f.profilesDir,
+		Hardened:            f.hardened,
+		HardenedRuntimeOnly: f.hardenedRuntimeOnly,
+		Runtime:             rt,
+		SELinuxRelabel:      relabel,
+		Egress:              egress,
 	}, apiBase, nil
 }
 
-// buildEgressAllow assembles the proxy allowlist. Hardened mode starts
-// from HardenedEgressAllow and ignores cfg.EgressAllow (the operator
-// must drop --hardened to widen). The anthropic base URL host is still
-// auto-added in both modes since it routes the same Anthropic API.
-func buildEgressAllow(hardened bool, cfg *config.Config, anthropicBaseURL string, log *slog.Logger) []string {
-	var allow []string
+// resolveScanNetworking prepares per-scan networking before the egress proxy
+// starts. In hardened mode it owns its per-scan networks -- the gateway IP is
+// probed inside RunSkill against the network the runner will actually attach to,
+// so it is left empty here -- and it sweeps orphan sidecars and networks left
+// behind by crashed scans. Outside hardened mode it resolves the host-gateway
+// IPv4 and the host the container reaches the skill API on: apiHost defaults to
+// the host-gateway alias, and only Apple (which has no --add-host) needs the
+// resolved gateway IP, where failing to resolve it is fatal.
+func resolveScanNetworking(rt worker.ContainerRuntime, f *flags, log *slog.Logger) (gwIP, apiHost string, err error) {
+	apiHost = worker.HostGatewayAlias
+	if f.hardened {
+		// Crash residue cleanup: remove orphan egress proxy sidecars first (a
+		// lingering sidecar pins its per-scan network), then the freed networks.
+		if removed, err := worker.SweepOrphanProxySidecars(rt); err != nil {
+			log.Warn("orphan proxy sidecar sweep failed", "err", err)
+		} else if removed > 0 {
+			log.Info("removed orphan egress proxy sidecars", "count", removed)
+		}
+		if removed, err := worker.SweepOrphanHardenedNetworks(rt); err != nil {
+			log.Warn("orphan hardened network sweep failed", "err", err)
+		} else if removed > 0 {
+			log.Info("removed orphan hardened networks", "count", removed)
+		}
+		return gwIP, apiHost, nil
+	}
+	gwIP = worker.ResolveHostGatewayIPv4(rt, f.runnerImage, "")
+	switch {
+	case rt.Bin == "podman" && gwIP == "":
+		// Reuses the resolve probe just run (no extra launch). An empty
+		// result means host-gateway is not wired, so containers cannot reach
+		// the host egress proxy and scans will fail with network errors --
+		// surface the likely cause now rather than once per scan.
+		log.Warn("host-gateway did not resolve under podman; scans may fail to " +
+			"reach the network because the container cannot reach the host egress " +
+			"proxy (needs podman >= 4.7; see docs/podman.md)")
+	case rt.Bin == "apple":
+		if gwIP == "" {
+			return "", "", fmt.Errorf("could not resolve the Apple container host gateway; cannot route scans to the egress proxy")
+		}
+		apiHost = gwIP
+	}
+	return gwIP, apiHost, nil
+}
+
+// resolveEgressSidecar builds the egress proxy sidecar config for a rootless
+// --hardened run. It resolves the default-network host-gateway the sidecar dials
+// to reach the loopback-bound host skill API, and warns when the podman backend
+// may not forward host-gateway to the host loopback. Returns the zero value (no
+// sidecar) for docker, rootful podman, and any non-rootless run -- those keep
+// the in-process host proxy.
+func resolveEgressSidecar(rt worker.ContainerRuntime, f *flags, allow []string, token string, log *slog.Logger) (worker.EgressSidecarConfig, error) {
+	if !rt.NeedsEgressSidecar() {
+		return worker.EgressSidecarConfig{}, nil
+	}
+	// Fail fast if the runner image lacks the scrutineer binary the sidecar runs,
+	// rather than letting every hardened scan fail with a cryptic per-scan error.
+	smokeCtx, cancel := context.WithTimeout(context.Background(), f.smokeTimeout)
+	defer cancel()
+	if err := worker.VerifyProxyBinary(smokeCtx, rt, f.runnerImage); err != nil {
+		return worker.EgressSidecarConfig{}, err
+	}
+	// Rootless podman: the per-scan --internal network cannot reach the host
+	// proxy, so egress runs through a proxy sidecar on the network. The sidecar
+	// reaches the host skill API over its egress leg via the default-network
+	// host-gateway, resolved once here.
+	if !rt.HostLoopbackBackendLikely() {
+		log.Warn("podman < 5.0 does not default to the pasta network backend; the egress proxy "+
+			"sidecar needs the backend to forward host-gateway to the host loopback (pasta "+
+			"--map-host-loopback, default in podman >= 5.0, or slirp4netns with host-loopback). "+
+			"Hardened scans are refused fail-closed if it is unavailable; see docs/egress-sidecar.md",
+			"version", rt.Version)
+	}
+	egressGwIP := worker.ResolveHostGatewayIPv4(rt, f.runnerImage, "")
+	if egressGwIP == "" {
+		log.Warn("host-gateway did not resolve under rootless podman; hardened scans will be refused " +
+			"because the egress proxy sidecar cannot reach the host skill API (needs podman >= 4.7 and a " +
+			"working rootless network backend; see docs/podman.md)")
+	}
+	return worker.EgressSidecarConfig{Token: token, Allow: allow, APIPort: addrPort(f.addr), GatewayIP: egressGwIP}, nil
+}
+
+// buildEgressAllow assembles the proxy allowlist: the harness's
+// model-API hosts first, then the harness-neutral base. Hardened mode
+// starts from HardenedEgressAllow and ignores cfg.EgressAllow (the
+// operator must drop --hardened to widen). The anthropic base URL host
+// is still auto-added in both modes since it routes the same model API.
+func buildEgressAllow(harnessHosts []string, hardened bool, cfg *config.Config, anthropicBaseURL string, log *slog.Logger) []string {
+	allow := append([]string{}, harnessHosts...)
 	if hardened {
 		allow = append(allow, worker.HardenedEgressAllow...)
 		if cfg != nil && len(cfg.EgressAllow) > 0 {

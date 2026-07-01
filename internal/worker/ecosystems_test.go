@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -211,6 +212,86 @@ func TestRefreshEcosystems_missingRepoErrors(t *testing.T) {
 	gdb := openEcosystemsTestDB(t)
 	if err := refreshEcosystems(context.Background(), gdb, 9999, false, slog.Default(), defaultEcosystemsEndpoints); err == nil {
 		t.Fatal("want error for missing repository, got nil")
+	}
+}
+
+func TestUpdateDependentsTable_mapsUpstreamPayload(t *testing.T) {
+	gdb := openEcosystemsTestDB(t)
+	repo := db.Repository{URL: "https://github.com/acme/widget", Name: "widget"}
+	gdb.Create(&repo)
+	gdb.Create(&db.Dependent{RepositoryID: repo.ID, Name: "stale", Ecosystem: "npm"})
+
+	payload := []dependentsEntry{
+		{
+			Package:   "widget",
+			Ecosystem: "npm",
+			Dependents: []json.RawMessage{
+				json.RawMessage(`{
+					"name":"rails-x",
+					"ecosystem":"rubygems",
+					"purl":"pkg:gem/rails-x",
+					"downloads":5000,
+					"dependent_repos_count":200,
+					"registry_url":"https://rubygems.org/gems/rails-x",
+					"latest_release_number":"7.0.0",
+					"repo_metadata":{"html_url":"https://github.com/acme/rails-x"}
+				}`),
+				json.RawMessage(`{
+					"name":"action-user",
+					"ecosystem":"github-actions",
+					"purl":"pkg:githubactions/acme/action-user",
+					"repository_url":"https://github.com/acme/action-user",
+					"downloads":42,
+					"dependent_repos_count":9,
+					"latest_release_number":"v1"
+				}`),
+			},
+		},
+		{
+			Package:   "widget-extra",
+			Ecosystem: "npm",
+			Dependents: []json.RawMessage{
+				json.RawMessage(`{
+					"name":"rails-x-duplicate",
+					"ecosystem":"rubygems",
+					"purl":"pkg:gem/rails-x",
+					"downloads":9999,
+					"dependent_repos_count":999,
+					"repository_url":"https://github.com/acme/rails-x-duplicate",
+					"latest_release_number":"9.9.9"
+				}`),
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := updateDependentsTable(gdb, repo.ID, body); err != nil {
+		t.Fatalf("update dependents table: %v", err)
+	}
+
+	var rows []db.Dependent
+	gdb.Where("repository_id = ?", repo.ID).Order("name").Find(&rows)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want 2", rows)
+	}
+	if rows[0].Name != "action-user" ||
+		rows[0].Ecosystem != "githubactions" ||
+		rows[0].RepositoryURL != "https://github.com/acme/action-user" ||
+		rows[0].DependentRepos != 9 ||
+		rows[0].LatestVersion != "v1" {
+		t.Errorf("action row = %+v", rows[0])
+	}
+	if rows[1].Name != "rails-x" ||
+		rows[1].Ecosystem != "gem" ||
+		rows[1].RepositoryURL != "https://github.com/acme/rails-x" ||
+		rows[1].DependentRepos != 200 ||
+		rows[1].LatestVersion != "7.0.0" ||
+		rows[1].RegistryURL != "https://rubygems.org/gems/rails-x" ||
+		rows[1].Downloads != 5000 {
+		t.Errorf("rails row = %+v", rows[1])
 	}
 }
 
