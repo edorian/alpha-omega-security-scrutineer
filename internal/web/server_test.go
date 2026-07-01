@@ -3805,72 +3805,60 @@ func TestScansRetryFailed(t *testing.T) {
 	}
 }
 
-func TestScansRetryFailed_preservesEffort(t *testing.T) {
-	s, done := newTestServer(t)
-	defer done()
-	// Force the runtime default away from the scan's effort so a dropped
-	// `effort` column in the retry Select would surface as "low", not "max".
-	s.SetDefaultEffort("low")
-
-	repo := db.Repository{URL: "https://example.com/x.git", Name: "x"}
-	s.DB.Create(&repo)
-	skill := db.Skill{Name: "deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
-	s.DB.Create(&skill)
-	orig := db.Scan{
-		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanFailed,
-		StatusPriority: db.StatusPriorityFor(db.ScanFailed),
-		SkillID:        &skill.ID, SkillName: "deep-dive", Effort: "max",
+func TestScansRetryFailed_preservesScanFields(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(*Server, *db.Scan)
+		check func(*testing.T, db.Scan)
+	}{
+		{"effort", func(s *Server, sc *db.Scan) {
+			// Force the runtime default away from the scan's effort so a dropped
+			// `effort` column in the retry Select would surface as "low", not "max".
+			s.SetDefaultEffort("low")
+			sc.Effort = "max"
+		}, func(t *testing.T, f db.Scan) {
+			if f.Effort != "max" {
+				t.Errorf("retry lost effort: got %q, want max", f.Effort)
+			}
+		}},
+		{"scan_group", func(_ *Server, sc *db.Scan) { sc.ScanGroup = "grp-7" }, func(t *testing.T, f db.Scan) {
+			if f.ScanGroup != "grp-7" {
+				t.Errorf("retry lost scan group: got %q, want grp-7", f.ScanGroup)
+			}
+		}},
 	}
-	s.DB.Create(&orig)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, done := newTestServer(t)
+			defer done()
 
-	req := httptest.NewRequest("POST", "/scans/retry-failed", nil)
-	req.Host = testHost
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("status %d: %s", w.Code, w.Body)
-	}
+			repo := db.Repository{URL: "https://example.com/x.git", Name: "x"}
+			s.DB.Create(&repo)
+			skill := db.Skill{Name: "deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
+			s.DB.Create(&skill)
+			orig := db.Scan{
+				RepositoryID: repo.ID, Kind: "skill", Status: db.ScanFailed,
+				StatusPriority: db.StatusPriorityFor(db.ScanFailed),
+				SkillID:        &skill.ID, SkillName: "deep-dive",
+			}
+			tc.setup(s, &orig)
+			s.DB.Create(&orig)
 
-	var fresh db.Scan
-	if err := s.DB.Where("id != ?", orig.ID).First(&fresh).Error; err != nil {
-		t.Fatal(err)
-	}
-	if fresh.Effort != "max" {
-		t.Errorf("retry lost effort: got %q, want max", fresh.Effort)
-	}
-}
+			req := httptest.NewRequest("POST", "/scans/retry-failed", nil)
+			req.Host = testHost
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			w := httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, req)
+			if w.Code != http.StatusSeeOther {
+				t.Fatalf("status %d: %s", w.Code, w.Body)
+			}
 
-func TestScansRetryFailed_preservesScanGroup(t *testing.T) {
-	s, done := newTestServer(t)
-	defer done()
-
-	repo := db.Repository{URL: "https://example.com/x.git", Name: "x"}
-	s.DB.Create(&repo)
-	skill := db.Skill{Name: "deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
-	s.DB.Create(&skill)
-	orig := db.Scan{
-		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanFailed,
-		StatusPriority: db.StatusPriorityFor(db.ScanFailed),
-		SkillID:        &skill.ID, SkillName: "deep-dive", ScanGroup: "grp-7",
-	}
-	s.DB.Create(&orig)
-
-	req := httptest.NewRequest("POST", "/scans/retry-failed", nil)
-	req.Host = testHost
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	w := httptest.NewRecorder()
-	s.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("status %d: %s", w.Code, w.Body)
-	}
-
-	var fresh db.Scan
-	if err := s.DB.Where("id != ?", orig.ID).First(&fresh).Error; err != nil {
-		t.Fatal(err)
-	}
-	if fresh.ScanGroup != "grp-7" {
-		t.Errorf("retry lost scan group: got %q, want grp-7", fresh.ScanGroup)
+			var fresh db.Scan
+			if err := s.DB.Where("id != ?", orig.ID).First(&fresh).Error; err != nil {
+				t.Fatal(err)
+			}
+			tc.check(t, fresh)
+		})
 	}
 }
 
