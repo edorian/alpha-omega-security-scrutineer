@@ -228,12 +228,13 @@ func TestWorker_claudeAccountErrorRecordsResetTime(t *testing.T) {
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	resetAt := now.Add(15 * time.Minute)
 	w := &Worker{
-		DB:             gdb,
-		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
-		DataDir:        t.TempDir(),
-		Runner:         fakeRunner{skillErr: &ClaudeAccountError{Detail: "rate limit reached", ResetAt: &resetAt}},
-		PrepareRepoSrc: stubPrepareRepoSrc,
-		Now:            func() time.Time { return now },
+		DB:               gdb,
+		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DataDir:          t.TempDir(),
+		Runner:           fakeRunner{skillErr: &ClaudeAccountError{Detail: "rate limit reached", ResetAt: &resetAt}},
+		PrepareRepoSrc:   stubPrepareRepoSrc,
+		Now:              func() time.Time { return now },
+		LogFlushInterval: time.Hour,
 	}
 	body, _ := json.Marshal(queue.Payload{ScanID: scan.ID})
 	if err := w.wrap(w.doSkill)(context.Background(), body); err != nil {
@@ -248,6 +249,9 @@ func TestWorker_claudeAccountErrorRecordsResetTime(t *testing.T) {
 		}
 		if !strings.Contains(got.Error, "Auto-resume after 2026-07-01T12:15:00Z") {
 			t.Errorf("scan %d error = %q, want auto-resume timestamp", id, got.Error)
+		}
+		if id == scan.ID && !strings.Contains(got.Log, "rate limit reset detected; auto-resume after 2026-07-01T12:15:00Z") {
+			t.Errorf("trigger log = %q, want persisted reset diagnostic", got.Log)
 		}
 	}
 }

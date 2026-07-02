@@ -503,6 +503,10 @@ func (w *Worker) finalizeScan(ctx context.Context, scan *db.Scan, report string,
 				w.scheduleAccountResumeAt(*effective)
 			}
 		}
+		// resolveAccountReset emitted after the Save above; persist that log tail.
+		if logErr := w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Update("log", scan.Log).Error; logErr != nil {
+			w.Log.Warn("account-pause log update failed", "scan", scan.ID, "err", logErr)
+		}
 	}
 	// The clone cache may have grown (clone/fetch/unshallow); refresh the
 	// cached size so the repo list reads it from the row instead of walking
