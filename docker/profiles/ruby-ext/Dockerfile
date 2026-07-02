@@ -52,6 +52,13 @@ ARG RUBY_GIT_REF=v3_4_9
 # pin as the ruby / ruby-rails profiles.
 ARG RUBY_BUILD_REF=v20260520
 
+# Brakeman, the Rails-specific SAST, so ruby-ext is a superset of ruby-rails
+# too: a Rails app that also ships a native extension matches ruby-ext first
+# (it precedes ruby-rails in detection) and must still get Rails SAST. Pure
+# Ruby; pin like the rest of the tooling. Kept in lockstep with the ruby-rails
+# profile -- TestBrakemanVersionParity guards the two pins against drift.
+ARG BRAKEMAN_VERSION=6.2.1
+
 # Rust toolchain pins, kept in lockstep with docker/profiles/rust so rb-sys
 # gems build the same way here. Nightly + rust-src is what -Zsanitizer /
 # -Zbuild-std need to instrument the Rust side of the Ruby<->Rust boundary.
@@ -63,6 +70,7 @@ FROM ${RUNNER_IMAGE}
 ARG RUBY_GIT_URL
 ARG RUBY_GIT_REF
 ARG RUBY_BUILD_REF
+ARG BRAKEMAN_VERSION
 ARG RUSTUP_VERSION
 ARG RUST_STABLE_VERSION
 ARG RUST_NIGHTLY_VERSION
@@ -172,6 +180,26 @@ RUN git clone --depth 1 --branch "${RUBY_GIT_REF}" "${RUBY_GIT_URL}" /opt/ruby-s
 RUN /usr/local/ruby-asan/bin/ruby -rrbconfig -e 'path=$LOADED_FEATURES.grep(/rbconfig\.rb$/).first; cfg=File.read(path); cfg.sub!(/^(\s*CONFIG\["cppflags"\] = ".*)"\s*$/){ $1.gsub(" -fno-sanitize=alignment","") + " -fno-sanitize-recover=undefined\"" } or abort("ruby-ext: cppflags entry not found in #{path}"); File.write(path, cfg)' \
  && /usr/local/ruby-asan/bin/ruby -e 'f=RbConfig::CONFIG["CPPFLAGS"]; abort("ruby-ext: alignment still off for extensions: #{f}") if f.include?("-fno-sanitize=alignment"); abort("ruby-ext: -fno-sanitize-recover missing for extensions: #{f}") unless f.include?("-fno-sanitize-recover=undefined"); STDERR.puts "ruby-ext: extension CPPFLAGS =>#{f}"'
 
+# Build-time proof the rbconfig rewrite above actually reaches a real mkmf
+# extension compile. The check above reads CONFIG["CPPFLAGS"] (a Ruby-level
+# proxy); this compiles a throwaway extension and greps the ACTUAL compiler
+# invocation -- the same assertion docs/ruby-ext-validation.md §5 does by hand,
+# now run on every build against the exact rbconfig this container produces. If
+# the cppflags→CPPFLAGS chain ever fails to reach mkmf, the image build fails
+# here instead of silently shipping uninstrumented extensions.
+RUN set -eux; \
+    d="$(mktemp -d)"; mkdir -p "$d/probe"; cd "$d/probe"; \
+    printf 'require "mkmf"\ncreate_makefile("probe")\n' > extconf.rb; \
+    printf 'void Init_probe(void){}\n' > probe.c; \
+    /usr/local/ruby-asan/bin/ruby extconf.rb; \
+    make V=1 > compile.log 2>&1 || { cat compile.log; exit 1; }; \
+    grep -Eq -- '-fno-sanitize-recover=undefined' compile.log \
+        || { echo "ruby-ext: extension compile is missing -fno-sanitize-recover=undefined"; cat compile.log; exit 1; }; \
+    if grep -Eq -- '-fno-sanitize=alignment' compile.log; then \
+        echo "ruby-ext: extension compile still carries -fno-sanitize=alignment (must be re-enabled for extensions)"; cat compile.log; exit 1; \
+    fi; \
+    cd /; rm -rf "$d"
+
 # Rust for rb-sys / Cargo-native gems. Minimal stable (default) + the pinned
 # nightly with rust-src so the Rust side of the boundary can be rebuilt with
 # -Zsanitizer=address -Zbuild-std to match the ASan interpreter. Miri is NOT
@@ -195,6 +223,18 @@ RUN set -eux; \
     /usr/local/cargo/bin/rustup toolchain install ${RUST_NIGHTLY_VERSION} --component rust-src; \
     chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"; \
     /usr/local/cargo/bin/rustc --version
+
+# Brakeman (pure-Ruby Rails SAST) so ruby-ext is a superset of ruby-rails too:
+# a Rails app that also ships a native extension matches ruby-ext first and must
+# still get Rails SAST (see the ruby-ext registry comment in
+# internal/worker/profile.go). Install with the STOCK apt ruby into its default
+# system gem dir (always on that ruby's Gem.path), with the wrapper forced onto
+# /usr/local/bin (on PATH): Brakeman then runs under the stock, not the ASan,
+# interpreter. GEM_HOME points at the ephemeral /work mount, so drop it for this
+# layer -- otherwise Brakeman would land in /work, which the scan's mount hides.
+RUN env -u GEM_HOME /usr/bin/gem install --no-document -n /usr/local/bin \
+        brakeman -v "${BRAKEMAN_VERSION}" \
+ && brakeman --version
 
 # Conservative-GC valgrind suppressions (memcheck on the STOCK ruby, never the
 # ASan one). A starting set — extend it as real runs surface GC false positives.

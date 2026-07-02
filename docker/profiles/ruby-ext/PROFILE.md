@@ -18,6 +18,14 @@ two attack surfaces and you are responsible for **both**:
 
 Filing only C findings (or only Ruby findings) is an incomplete scan. Cover the whole gem.
 
+### If the repo is also a Rails app
+
+Some repos are a Rails app *and* ship a native extension (a `config/application.rb` alongside
+`ext/**/`). Such a repo matches this profile first, so it also carries **Brakeman**: run
+`brakeman ./src` (stock interpreter) for the Rails-shaped classes — SQLi, XSS, mass-assignment,
+unsafe deserialization, command injection, SSRF, open redirect, CSRF gaps — the generic semgrep
+pass misses, on top of the C/Ruby audit above.
+
 ## Layout & interpreters
 
 - `./src` — the gem source. `lib/` is the Ruby API; `ext/<name>/` is the native extension
@@ -30,7 +38,7 @@ Filing only C findings (or only Ruby findings) is an incomplete scan. Cover the 
   Ruby-level work and as the **valgrind** target. Never run valgrind against the ASan ruby.
 - `/opt/ruby-src` — the Ruby source tree the ASan build came from. Cross-reference C-API
   semantics here when triaging (`include/ruby/**`, `string.c`, `gc.c`).
-- `gdb`, `strace`, `valgrind`, `cargo`, `gh`, `claude` — on PATH.
+- `gdb`, `strace`, `valgrind`, `cargo`, `brakeman`, `gh`, `claude` — on PATH.
 
 ## Building & driving the extension (under ASan, the default ruby)
 
@@ -89,8 +97,13 @@ ASAN_OPTIONS=
                                  Keep 0 unless you understand the interaction.
   abort_on_error=1               a detected bug is a hard, pinpointed stop
   symbolize=1 / print_summary=1  readable trace + one-line SUMMARY
-UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1   extensions are built -fno-sanitize-recover,
-                                 so UB in the extension aborts — the abort is the evidence
+UBSAN_OPTIONS=
+  print_stacktrace=1 / print_summary=1  readable trace + one-line SUMMARY
+  halt_on_error=0                the interpreter is built WITHOUT -fno-sanitize-recover, so its
+                                 own benign UB prints-and-continues and never kills the scan
+  abort_on_error=1               an extension is built WITH -fno-sanitize-recover=undefined, so
+                                 its UB hits the compiled-in abort — SIGABRT (same signature as
+                                 an ASan finding) is the evidence
 ```
 
 If a confusing crash looks like a GC/ASan artifact rather than a gem bug (a free deep inside

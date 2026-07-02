@@ -119,6 +119,12 @@ requires 8 byte alignment` in `aln_go`, SIGABRT (exit 134). The `make V=1` compi
 line must carry `-fno-sanitize-recover=undefined` and **no** `-fno-sanitize=alignment`
 — proof the rbconfig rewrite reached the extension.
 
+> The **compile-line** half of this check (the flags on the `make V=1` line) now also runs
+> automatically during the image build — see the "Build-time proof …" `RUN` in the Dockerfile,
+> which compiles a throwaway extension and greps its compile command — so a broken rbconfig
+> rewrite fails the build rather than reaching here. This §5 additionally confirms the *runtime*
+> abort, which the build-time gate does not exercise.
+
 Interpreter-quiet control (exception handling must run clean, no alignment reports
 leaking from the interpreter itself):
 
