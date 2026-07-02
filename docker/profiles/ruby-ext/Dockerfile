@@ -80,10 +80,10 @@ USER root
 # interpreter build below runs an ASan/UBSan-instrumented miniruby for codegen,
 # and that interpreter — deliberately compiled WITHOUT -fno-sanitize-recover —
 # trips benign UB and leaks freely during those short-lived runs. detect_leaks=0
-# and halt_on_error=0 keep that benign, so `make` doesn't abort. The FATAL
-# runtime options (abort_on_error, halt_on_error=1, RUBY_FREE_AT_EXIT) are set
-# LAST, after the build, so they scope to the gem scan — mirroring how the
-# extension CFLAGS further down are set after the interpreter build.
+# and halt_on_error=0 keep that benign, so `make` doesn't abort. The heavier
+# scan-time options (abort_on_error, RUBY_FREE_AT_EXIT) are set LAST, after the
+# build, so they scope to the gem scan — mirroring how the extension CFLAGS
+# further down are set after the interpreter build.
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/ruby-asan/bin:/work/.gem/bin:/opt/ruby-build/bin:/usr/local/cargo/bin:$PATH \
     GEM_HOME=/work/.gem \
@@ -123,10 +123,24 @@ RUN git clone --depth 1 --branch "${RUBY_BUILD_REF}" \
 #  - sanitizers go in cppflags so they reach the compile of BOTH the
 #    interpreter and, via rbconfig's CPPFLAGS, every extension mkmf later
 #    builds — instrument the interpreter once and gems inherit it.
+#  - -fno-sanitize=alignment: the interpreter accesses packed iseq structs
+#    (e.g. iseq_catch_table_entry) at unaligned addresses — benign on the
+#    amd64/arm64 targets, but UBSan's alignment check otherwise floods every
+#    rescue/ensure/exception path with reports. Dropping it here quiets the
+#    interpreter across ALL its source files at once, with no dependency on
+#    libubsan suppressions-file support (which varies by the container's GCC).
+#  - -fno-sanitize-recover is intentionally NOT set: the interpreter trips
+#    benign UB and must recover (print-and-continue), or `make` — which runs the
+#    instrumented miniruby for codegen — aborts (the original exit-2).
 #  - optflags=-O1 -g keeps ASan traces readable without the -O0 slowdown.
-#  - -fno-sanitize-recover is intentionally NOT set here: the interpreter
-#    itself may trip benign UB; the exported CFLAGS below add it so only
-#    extension builds abort on UB.
+#
+# A native EXTENSION wants the OPPOSITE of both: alignment ON, and UB fatal so
+# the abort is the evidence. rbconfig conflates the interpreter's build flags
+# with the flags mkmf records for extensions, and the exported CFLAGS below
+# CANNOT override them — mkmf hard-assigns CFLAGS in its generated Makefile, so
+# `make` ignores the environment. The post-build RUN therefore rewrites the
+# recorded cppflags in rbconfig for extensions; the built interpreter is
+# untouched.
 #
 # Open question (see issue-ruby-profiles.md #1): Ruby's conservative GC scans
 # the C stack for VALUEs, which interacts with ASan's fake stack. We ship the
@@ -140,13 +154,23 @@ RUN git clone --depth 1 --branch "${RUBY_GIT_REF}" "${RUBY_GIT_URL}" /opt/ruby-s
  && ./configure \
         --prefix=/usr/local/ruby-asan \
         --disable-install-doc \
-        cppflags="-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer -DRUBY_DEBUG=1" \
+        cppflags="-fsanitize=address -fsanitize=undefined -fno-sanitize=alignment -fno-omit-frame-pointer -DRUBY_DEBUG=1" \
         optflags="-O1 -g" \
         debugflags="-g3" \
         LDFLAGS="-fsanitize=address -fsanitize=undefined" \
  && make -j"$(nproc)" \
  && make install \
  && /usr/local/ruby-asan/bin/ruby -v
+
+# Give mkmf-built extensions the flags the interpreter build could not carry
+# (see the note above): rewrite the RECORDED `cppflags` in rbconfig so extension
+# compiles get the alignment check back AND -fno-sanitize-recover=undefined (UB
+# aborts = the evidence). This edits only the recorded config — the interpreter
+# binary is already built and stays quiet. It aborts if the entry's shape ever
+# changes, so it fails loudly instead of silently no-op'ing (the trap the env
+# CFLAGS fell into), then re-reads CPPFLAGS to assert the result.
+RUN /usr/local/ruby-asan/bin/ruby -rrbconfig -e 'path=$LOADED_FEATURES.grep(/rbconfig\.rb$/).first; cfg=File.read(path); cfg.sub!(/^(\s*CONFIG\["cppflags"\] = ".*)"\s*$/){ $1.gsub(" -fno-sanitize=alignment","") + " -fno-sanitize-recover=undefined\"" } or abort("ruby-ext: cppflags entry not found in #{path}"); File.write(path, cfg)' \
+ && /usr/local/ruby-asan/bin/ruby -e 'f=RbConfig::CONFIG["CPPFLAGS"]; abort("ruby-ext: alignment still off for extensions: #{f}") if f.include?("-fno-sanitize=alignment"); abort("ruby-ext: -fno-sanitize-recover missing for extensions: #{f}") unless f.include?("-fno-sanitize-recover=undefined"); STDERR.puts "ruby-ext: extension CPPFLAGS =>#{f}"'
 
 # Rust for rb-sys / Cargo-native gems. Minimal stable (default) + the pinned
 # nightly with rust-src so the Rust side of the boundary can be rebuilt with
@@ -176,10 +200,12 @@ RUN set -eux; \
 # ASan one). A starting set — extend it as real runs surface GC false positives.
 COPY ruby.supp /usr/local/share/ruby-ext/ruby.supp
 
-# Extensions the ASan ruby builds inherit these on top of rbconfig's flags.
-# -fno-sanitize-recover=undefined makes UB in an extension abort (the abort is
-# the evidence) rather than print-and-continue. Set AFTER the interpreter build
-# so it scopes to gem builds, not the interpreter itself (mirrors python-ext).
+# Sanitizer flags for build systems that DO read the environment — chiefly the
+# cc-rs crate that rb-sys / Cargo-native gems use to compile their C/C++ shim.
+# NOTE: these do NOT reach Ruby's own mkmf extension builds — mkmf hard-assigns
+# CFLAGS in its generated Makefile, so `make` ignores the environment; mkmf gets
+# its sanitizer + -fno-sanitize-recover flags from the rbconfig patch above.
+# -fno-sanitize-recover=undefined makes UB abort (the abort is the evidence).
 ENV CFLAGS="-fsanitize=address -fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1" \
     CXXFLAGS="-fsanitize=address -fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1" \
     LDFLAGS="-fsanitize=address -fsanitize=undefined"
@@ -193,15 +219,22 @@ RUN chmod -R a+rwX /usr/local/ruby-asan "$RUSTUP_HOME" "$CARGO_HOME" \
  && /usr/bin/ruby -v && valgrind --version && cargo --version
 
 # Runtime (gem-scan) sanitizer options — set LAST, after every build and verify
-# step above, so none of them run under these fatal settings. During the
-# from-source interpreter build these MUST stay permissive (see the build-safe
-# ENV near the top): the instrumented miniruby codegen runs leak and tear-down
-# freely and the interpreter trips benign UB, so abort_on_error, halt_on_error=1
-# or RUBY_FREE_AT_EXIT here would abort those healthy runs and fail `make` with
-# exit 2. They belong to the scan, exactly like the extension CFLAGS above scope
-# to gem builds, not the interpreter.
+# step above. abort_on_error and RUBY_FREE_AT_EXIT are fatal/heavy scan-time
+# signals that MUST NOT be live during the build (the build-safe ENV near the
+# top omits them): the instrumented miniruby leaks and tears down on every
+# short-lived codegen run, so having them here during `make` aborted healthy
+# runs and produced the original exit-2. They belong to the scan, not the build.
+#
+# halt_on_error stays 0 while abort_on_error=1: a gem's extension is compiled
+# with -fno-sanitize-recover=undefined (via the patched rbconfig above), so its
+# UB takes the compiled-in abort handler and, with abort_on_error=1, exits with
+# SIGABRT — the same crash signature as an ASan finding. The interpreter, built
+# WITHOUT -fno-sanitize-recover, uses the recoverable handler: with
+# halt_on_error=0 it prints-and-continues and never reaches abort, so its benign
+# UB can't kill the scan. (halt_on_error=1 would abort the scan on the
+# interpreter's own benign UB — the opposite of what we want.)
 ENV RUBY_FREE_AT_EXIT=1 \
     ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=0:abort_on_error=1:symbolize=1:print_summary=1" \
-    UBSAN_OPTIONS="print_stacktrace=1:print_summary=1:halt_on_error=1"
+    UBSAN_OPTIONS="print_stacktrace=1:print_summary=1:halt_on_error=0:abort_on_error=1"
 
 USER runner
