@@ -1103,9 +1103,18 @@ const (
 	// first added. It owns the decision about which other skills to run;
 	// editing that skill changes the default pipeline with no Go changes.
 	defaultSkillName = "triage"
-	// deepDiveSkillName is the skill whose reports feed the Summary, Findings
-	// and Threat Model tabs on the repository page.
+	// deepDiveSkillName is the skill whose structured report feeds the
+	// Summary and Threat Model tabs on the repository page. The Findings tab
+	// and the deep-dive finding counts are broader: they also treat
+	// advisoryDeepDiveSkillName as curated (see nonScannerScanFilter and
+	// findingsScanIDs).
 	deepDiveSkillName = "security-deep-dive"
+	// advisoryDeepDiveSkillName re-audits a repo's past advisories for fix
+	// bypasses, incomplete fixes, and sibling bugs. Its output is curated LLM
+	// audit findings like security-deep-dive and vuln-scan, so it joins them in
+	// the Findings bucket (findingsBucketSkillSQL) and in isLLMAuditSkill rather
+	// than the Scanners tab.
+	advisoryDeepDiveSkillName = "advisory-deep-dive"
 	// vulnScanSkillName is the LLM-driven high-recall candidate scan. Like
 	// security-deep-dive it uses a model to find real vulnerabilities, so its
 	// findings belong in the curated Findings bucket alongside the deep-dive
@@ -1117,14 +1126,15 @@ const (
 	// alias `s` and group findings, so they filter s.skill_name/s.kind directly
 	// rather than threading findings.scan_id through a subquery. A finding
 	// counts when its scan is one of the LLM audits (security-deep-dive,
-	// vuln-scan), a legacy/empty skill_name, or an operator import (kind=import);
-	// the two ?s bind deepDiveSkillName and vulnScanSkillName in that order.
-	// The `s.skill_name IS NULL` arm doubles as the LEFT JOIN "this row has no
-	// findings" guard, so zero-count maintainers/orgs stay in the result with
-	// n=0. Keep it in lockstep with findingsBucketSkillSQL — a copy that lacked
-	// the kind='import' arm is exactly what kept imports out of these totals
-	// after they began showing in the Findings tab.
-	aliasedFindingsScanFilter = "(s.skill_name IN (?, ?) OR s.skill_name = '' OR s.skill_name IS NULL OR s.kind = 'import')"
+	// vuln-scan, advisory-deep-dive), a legacy/empty skill_name, or an operator
+	// import (kind=import); the three ?s bind deepDiveSkillName, vulnScanSkillName
+	// and advisoryDeepDiveSkillName in that order. The `s.skill_name IS NULL` arm
+	// doubles as the LEFT JOIN "this row has no findings" guard, so zero-count
+	// maintainers/orgs stay in the result with n=0. Keep it in lockstep with
+	// findingsBucketSkillSQL — a copy that lacked the kind='import' arm is exactly
+	// what kept imports out of these totals after they began showing in the
+	// Findings tab.
+	aliasedFindingsScanFilter = "(s.skill_name IN (?, ?, ?) OR s.skill_name = '' OR s.skill_name IS NULL OR s.kind = 'import')"
 	// threatModelSkillName is the skill whose report feeds the Threat Model
 	// tab when present; repos that predate it fall back to the boundaries
 	// section of the deep-dive report so older scans keep rendering.
@@ -1138,8 +1148,9 @@ const (
 var (
 	// findingsBucketSkillSQL is the single source of truth for which scans'
 	// findings populate the curated Findings bucket: the LLM audit skills
-	// (security-deep-dive, vuln-scan), legacy claude jobs with an empty or NULL
-	// skill_name, and operator imports (kind='import'). An import is a
+	// (security-deep-dive, vuln-scan, advisory-deep-dive), legacy claude jobs
+	// with an empty or NULL skill_name, and operator imports (kind='import'). An
+	// import is a
 	// deliberate curation act, not noisy auto-scanner output, so it sits with
 	// the audit findings and shows by default rather than behind the Scanners
 	// toggle. The skill names are spliced in as literals rather than bound
@@ -1149,7 +1160,7 @@ var (
 	// than able to break out (see TestDeepDiveSkillNameSafeForSplicing).
 	// Parenthesised so it can be embedded in larger expressions without
 	// precedence surprises.
-	findingsBucketSkillSQL = "(skill_name IN (" + db.SQLStringLiteral(deepDiveSkillName) + ", " + db.SQLStringLiteral(vulnScanSkillName) + ") OR skill_name = '' OR skill_name IS NULL OR kind = 'import')"
+	findingsBucketSkillSQL = "(skill_name IN (" + db.SQLStringLiteral(deepDiveSkillName) + ", " + db.SQLStringLiteral(vulnScanSkillName) + ", " + db.SQLStringLiteral(advisoryDeepDiveSkillName) + ") OR skill_name = '' OR skill_name IS NULL OR kind = 'import')"
 	// nonScannerScanFilter selects findings whose parent scan populates the
 	// Findings bucket (findingsBucketSkillSQL) — every finding the UI shows by
 	// default. scannerScanFilter is its structural inverse: the cheap tool
@@ -1166,8 +1177,8 @@ var (
 // findings for the surrounding repositories row. Used in the repos list
 // "findings" sort. Tool-scanner skills are excluded so the ordering matches
 // the counts shown in the Findings column. The LLM audit skills
-// (security-deep-dive, vuln-scan), legacy rows, and operator imports
-// (kind='import') all count via findingsBucketSkillSQL, so the column agrees
+// (security-deep-dive, vuln-scan, advisory-deep-dive), legacy rows, and
+// operator imports (kind='import') all count via findingsBucketSkillSQL, so the column agrees
 // with the Findings tab. The skill names are spliced into findingsBucketSkillSQL
 // as text (this fragment feeds an ORDER BY that can't take a bind parameter);
 // both are trusted compile-time constants kept free of SQL metacharacters by
@@ -1178,22 +1189,23 @@ var deepDiveFindingsCountSQL = `SELECT COUNT(*) FROM findings f
 	      AND f.scan_id IN (SELECT id FROM scans WHERE ` + findingsBucketSkillSQL + `)`
 
 // findingsScanIDs returns a GORM subquery selecting scan IDs that belong to
-// the curated LLM audits (security-deep-dive, vuln-scan), to legacy/empty
-// skill_name rows, or to an operator import (kind='import') — everything in
-// findingsBucketSkillSQL. Use it as a `scan_id IN (?)` filter to keep listings
-// consistent with the repo Findings tab.
+// the curated LLM audits (security-deep-dive, vuln-scan, advisory-deep-dive),
+// to legacy/empty skill_name rows, or to an operator import (kind='import') —
+// everything in findingsBucketSkillSQL. Use it as a `scan_id IN (?)` filter to
+// keep listings consistent with the repo Findings tab.
 func findingsScanIDs(gdb *gorm.DB) *gorm.DB {
 	return gdb.Model(&db.Scan{}).Select("id").Where(findingsBucketSkillSQL)
 }
 
 // isLLMAuditSkill reports whether a finalized scan is one of the curated LLM
-// audits (security-deep-dive, vuln-scan) whose fresh output drives the
-// auto-triage funnels (finding-dedup and the revalidate pre-sort). Unlike
-// findingsBucketSkillSQL this deliberately excludes legacy empty/NULL
+// audits (security-deep-dive, vuln-scan, advisory-deep-dive) whose fresh output
+// drives the auto-triage funnels (finding-dedup and the revalidate pre-sort).
+// Unlike findingsBucketSkillSQL this deliberately excludes legacy empty/NULL
 // skill_name rows and imports: those are inert, not a live scan that just
 // produced new findings worth triaging.
 func isLLMAuditSkill(skillName string) bool {
-	return skillName == deepDiveSkillName || skillName == vulnScanSkillName
+	return skillName == deepDiveSkillName || skillName == vulnScanSkillName ||
+		skillName == advisoryDeepDiveSkillName
 }
 
 func findingSupportsExposure(scan db.Scan) bool {
