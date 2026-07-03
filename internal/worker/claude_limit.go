@@ -123,9 +123,24 @@ func preferAccountErrText(current, candidate string) string {
 	}
 }
 
+func preferRateLimitReset(current, candidate *RateLimitInfo) *RateLimitInfo {
+	if candidate == nil || !candidate.Rejected() || candidate.ResetTime() == nil {
+		return current
+	}
+	if current == nil {
+		return candidate
+	}
+	curReset := current.ResetTime()
+	candReset := candidate.ResetTime()
+	if curReset == nil || candReset.After(*curReset) {
+		return candidate
+	}
+	return current
+}
+
 // resumableReset returns a captured reset only for transient account limits.
 func resumableReset(errText string, rl *RateLimitInfo) *time.Time {
-	if !accountErrorResumable(errText) {
+	if !accountErrorResumable(errText) || rl == nil || !rl.Rejected() {
 		return nil
 	}
 	return rl.ResetTime()

@@ -492,7 +492,7 @@ func (w *Worker) finalizeScan(ctx context.Context, scan *db.Scan, report string,
 	}
 	w.maybeFireScanFinalized(scan, err)
 	if accErr, isAccountErr := errors.AsType[*ClaudeAccountError](err); isAccountErr && scan.Status == db.ScanPaused {
-		w.pauseQueuedOnAccountError(scan.ID, nil)
+		w.pauseQueuedOnAccountError(scan.ID)
 		if rawReset := w.resolveAccountReset(accErr, emit); rawReset != nil {
 			effective, applyErr := w.applyAccountPauseReset(scan.ID, scan.Error, rawReset)
 			if applyErr != nil {
@@ -531,17 +531,18 @@ func (w *Worker) resolveAccountReset(accErr *ClaudeAccountError, emit func(Event
 		emit(Event{Kind: KindText, Text: "no rate-limit reset reported; leaving paused for manual resume"})
 		return nil
 	}
-	resetAt := accErr.ResetAt
-	if !resetAt.After(w.now()) {
+	now := w.now().UTC()
+	resetAt := accErr.ResetAt.UTC()
+	if !resetAt.After(now) {
 		emit(Event{Kind: KindText, Text: "rate-limit reset time is already in the past"})
 		return nil
 	}
-	if wait := resetAt.Sub(w.now()); wait > w.maxRateLimitAutoResumeDelay() {
+	if wait := resetAt.Sub(now); wait > w.maxRateLimitAutoResumeDelay() {
 		emit(Event{Kind: KindText, Text: fmt.Sprintf("rate-limit reset time %s is beyond auto-resume limit %s", resetAt.UTC().Format(time.RFC3339), w.maxRateLimitAutoResumeDelay())})
 		return nil
 	}
 	emit(Event{Kind: KindText, Text: "rate limit reset detected; auto-resume after " + resetAt.UTC().Format(time.RFC3339)})
-	return resetAt
+	return &resetAt
 }
 
 // maybeFireScanFinalized invokes the OnScanFinalized hook once a scan has
@@ -664,9 +665,9 @@ func appendAutoResumeFailure(msg string, err error) string {
 
 // pauseQueuedOnAccountError pauses every queued scan behind an account-level
 // Claude failure; queued jobs later drop themselves when wrap sees the DB state.
-func (w *Worker) pauseQueuedOnAccountError(triggerID uint, resetAt *time.Time) {
-	now := w.now()
-	reason := accountPauseReason(resetAt)
+func (w *Worker) pauseQueuedOnAccountError(triggerID uint) {
+	now := w.now().UTC()
+	reason := accountPauseReason(nil)
 	res := w.DB.Model(&db.Scan{}).
 		Where("status = ?", db.ScanQueued).
 		Updates(map[string]any{
@@ -674,7 +675,6 @@ func (w *Worker) pauseQueuedOnAccountError(triggerID uint, resetAt *time.Time) {
 			"status_priority": db.StatusPriorityFor(db.ScanPaused),
 			"error":           reason,
 			"finished_at":     &now,
-			"paused_until":    resetAt,
 		})
 	if res.Error != nil {
 		w.Log.Warn("pause-on-account-error failed", "trigger", triggerID, "err", res.Error)
@@ -691,10 +691,12 @@ func (w *Worker) applyAccountPauseReset(triggerID uint, baseError string, resetA
 	if resetAt == nil {
 		return nil, nil
 	}
+	resetAtUTC := resetAt.UTC()
+	resetAt = &resetAtUTC
 	// A concurrent scan may already have found a later binding reset. Ignore any
 	// row already beyond the auto-resume window, so a stale or manually-set
 	// far-future pause cannot drag every subsequent batch out to it.
-	maxAcceptable := w.now().Add(w.maxRateLimitAutoResumeDelay())
+	maxAcceptable := w.now().UTC().Add(w.maxRateLimitAutoResumeDelay())
 	var latest db.Scan
 	if err := w.DB.Select("paused_until").
 		Where("id != ? AND status = ? AND error LIKE ? AND paused_until IS NOT NULL AND paused_until <= ?",
@@ -785,11 +787,11 @@ func (w *Worker) scheduleAccountResumeAfter(delay time.Duration) {
 	if delay < w.autoResumeRetryDelay() {
 		delay = w.autoResumeRetryDelay()
 	}
-	w.scheduleAutoResumeAt(w.now().Add(delay))
+	w.scheduleAutoResumeAt(w.now().UTC().Add(delay))
 }
 
 func (w *Worker) scheduleAutoResumeAt(when time.Time) {
-	delay := when.Sub(w.now())
+	delay := when.Sub(w.now().UTC())
 	if delay < 0 {
 		delay = 0
 	}
@@ -843,7 +845,7 @@ func (w *Worker) resumeAccountPaused(ctx context.Context) (int, error) {
 	var scans []db.Scan
 	if err := w.DB.Select("id", "kind", "finding_id", "error", "paused_until").
 		Where("status = ? AND error LIKE ? AND paused_until IS NOT NULL AND paused_until <= ?",
-			db.ScanPaused, ClaudeAccountPausePrefix+"%", w.now()).
+			db.ScanPaused, ClaudeAccountPausePrefix+"%", w.now().UTC()).
 		Order("id").
 		Find(&scans).Error; err != nil {
 		return 0, err
@@ -869,7 +871,7 @@ func (w *Worker) resumeAccountPaused(ctx context.Context) (int, error) {
 			priority = PrioFinding
 		}
 		if err := w.Queue.Enqueue(ctx, sc.Kind, sc.ID, priority); err != nil {
-			now := w.now()
+			now := w.now().UTC()
 			restoreErr := w.DB.Model(&db.Scan{}).Where("id = ?", sc.ID).Updates(map[string]any{
 				"status":          db.ScanPaused,
 				"status_priority": db.StatusPriorityFor(db.ScanPaused),

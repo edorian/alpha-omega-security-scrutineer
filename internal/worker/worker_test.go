@@ -431,6 +431,34 @@ func TestWorker_applyAccountPauseResetIgnoresFarFutureRow(t *testing.T) {
 	}
 }
 
+func TestWorker_applyAccountPauseResetMaxUsesUTCComparison(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "max-utc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://example.com/x", Name: "x"}
+	gdb.Create(&repo)
+
+	nowUTC := time.Date(2026, 7, 1, 12, 1, 0, 0, time.UTC)
+	nowLocal := nowUTC.In(time.FixedZone("PDT", -7*60*60))
+	fiveHour := nowUTC.Add(15 * time.Minute)
+	validLater := nowUTC.Add(8*24*time.Hour - time.Minute)
+
+	longPaused := db.Scan{RepositoryID: repo.ID, Kind: JobSkill, Status: db.ScanPaused, Error: accountPauseReason(&validLater), PausedUntil: &validLater}
+	trigger := db.Scan{RepositoryID: repo.ID, Kind: JobSkill, Status: db.ScanPaused, Error: (&ClaudeAccountError{Detail: "rate limit reached"}).Error(), PausedUntil: nil}
+	gdb.Create(&longPaused)
+	gdb.Create(&trigger)
+
+	w := &Worker{DB: gdb, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: func() time.Time { return nowLocal }}
+	effective, err := w.applyAccountPauseReset(trigger.ID, trigger.Error, &fiveHour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective == nil || !effective.Equal(validLater) {
+		t.Fatalf("effective = %v, want valid later reset %v", effective, validLater)
+	}
+}
+
 func TestWorker_applyAccountPauseResetSkipsResumedTrigger(t *testing.T) {
 	gdb, err := db.Open(filepath.Join(t.TempDir(), "resumed-trigger.db"))
 	if err != nil {
@@ -542,6 +570,44 @@ func TestWorker_resumeAccountPaused(t *testing.T) {
 	}
 	if gotManual.Status != db.ScanPaused {
 		t.Errorf("manual status = %s, want paused", gotManual.Status)
+	}
+}
+
+func TestWorker_resumeAccountPausedUsesUTCComparison(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "resume-account-utc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqldb, err := gdb.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := queue.New(sqldb, slog.New(slog.NewTextHandler(io.Discard, nil)), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://example.com/x", Name: "x"}
+	gdb.Create(&repo)
+	skill := db.Skill{Name: "limited", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
+	gdb.Create(&skill)
+
+	resetAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	nowLocal := resetAt.Add(time.Minute).In(time.FixedZone("PDT", -7*60*60))
+	due := db.Scan{RepositoryID: repo.ID, Kind: JobSkill, Status: db.ScanPaused, SkillID: &skill.ID, Error: accountPauseReason(&resetAt), PausedUntil: &resetAt}
+	gdb.Create(&due)
+
+	w := &Worker{
+		DB:    gdb,
+		Queue: q,
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:   func() time.Time { return nowLocal },
+	}
+	resumed, err := w.resumeAccountPaused(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed != 1 {
+		t.Fatalf("resumed = %d, want 1", resumed)
 	}
 }
 

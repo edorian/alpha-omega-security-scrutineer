@@ -271,11 +271,11 @@ func (d ContainerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Ev
 
 	h := d.harness()
 	accountErrText := ""
-	var lastRateLimit *RateLimitInfo
+	var rateLimitReset *RateLimitInfo
 	wrappedEmit := func(e Event) {
 		accountErrText = preferAccountErrText(accountErrText, h.AccountErrorText(e.Text))
 		if e.Kind == KindRateLimit && e.RateLimit != nil {
-			lastRateLimit = e.RateLimit
+			rateLimitReset = preferRateLimitReset(rateLimitReset, e.RateLimit)
 		}
 		emit(e)
 	}
@@ -305,7 +305,7 @@ func (d ContainerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Ev
 			return res, &MaxTurnsReachedError{}
 		}
 		if accountErrText != "" {
-			return res, &ClaudeAccountError{Detail: accountErrText, ResetAt: resumableReset(accountErrText, lastRateLimit)}
+			return res, &ClaudeAccountError{Detail: accountErrText, ResetAt: resumableReset(accountErrText, rateLimitReset)}
 		}
 		return res, fmt.Errorf("%s exited: %w", d.Runtime.bin(), waitErr)
 	}
