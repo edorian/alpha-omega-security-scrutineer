@@ -6,11 +6,11 @@
 ARG CLAUDE_VERSION=2.1.173
 ARG SEMGREP_VERSION=1.167.0
 
-FROM golang:1.26.4-trixie@sha256:76a29248dedcd75870e95cbd90cc8cb356db082404ac7d3a5803f276c3ba79c9 AS go-tools
+FROM golang:1.26.4-trixie@sha256:68b7145ec43d1820b9a56704554b53d1520aa2a15cb5233e374188a31b2a1bce AS go-tools
 RUN GOBIN=/out go install github.com/git-pkgs/git-pkgs@v0.15.3 && \
     GOBIN=/out go install github.com/git-pkgs/brief/cmd/brief@v0.6.0
 
-FROM rust:1.96-trixie@sha256:6df234c1eb92b0545468fab8c18fc5f9adfb994e7d4f67d81d45fe2fcabf5657 AS zizmor-build
+FROM rust:1.96-trixie@sha256:1f0dbad1df66647807e6952d1db85d0b2bda7606cb2139d82517e4f009967376 AS zizmor-build
 ENV CARGO_HTTP_MULTIPLEXING=false
 RUN cargo install --locked --root /out zizmor@1.26.1
 
@@ -19,7 +19,7 @@ RUN cargo install --locked --root /out zizmor@1.26.1
 # (`scrutineer proxy`) instead of a second published image. Built CGO-free and
 # static like the main server image, so it drops into the slim runtime as a
 # plain copy with no glibc dependency.
-FROM golang:1.26.4-trixie@sha256:76a29248dedcd75870e95cbd90cc8cb356db082404ac7d3a5803f276c3ba79c9 AS scrutineer-build
+FROM golang:1.26.4-trixie@sha256:68b7145ec43d1820b9a56704554b53d1520aa2a15cb5233e374188a31b2a1bce AS scrutineer-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
