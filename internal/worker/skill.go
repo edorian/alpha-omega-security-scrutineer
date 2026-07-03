@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -466,9 +467,9 @@ func (w *Worker) persistFinding(scan *db.Scan, f *db.Finding) (created bool, err
 func (w *Worker) reobserveFinding(existing, f *db.Finding, scan *db.Scan) error {
 	// A finding already last-seen in this same scan was streamed into the
 	// concurrent-finding log earlier in this run. Reconciling it from
-	// the final report must be idempotent: refresh drifting fields but do not
-	// bump seen_count or write another observed-history row, or a streamed
-	// finding would count as seen twice by one scan.
+	// the final report must be idempotent: do not bump seen_count or write
+	// another observed-history row, or a streamed finding would count as
+	// seen twice by one scan.
 	sameScan := existing.LastSeenScanID == scan.ID
 
 	seenCount := existing.SeenCount + 1
@@ -483,6 +484,32 @@ func (w *Worker) reobserveFinding(existing, f *db.Finding, scan *db.Scan) error 
 		"last_missed_scan_id": 0,
 		"location":            f.Location,
 		"locations":           f.Locations,
+	}
+	if sameScan {
+		// The existing row is this run's own streamed preview, which may
+		// carry only the minimal fields the POST endpoint requires. The
+		// final report is the authoritative full version of the same
+		// finding, so parser-owned content is refreshed wholesale.
+		// Cross-scan re-observation deliberately keeps existing content
+		// (TestParseFindingsOutput_dedupesAcrossScans locks that in).
+		maps.Copy(updates, map[string]any{
+			"finding_id":   f.FindingID,
+			"sinks":        f.Sinks,
+			"title":        f.Title,
+			"severity":     f.Severity,
+			"confidence":   f.Confidence,
+			"cwe":          f.CWE,
+			"affected":     f.Affected,
+			"reachability": f.Reachability,
+			"quality_tier": f.QualityTier,
+			"trace":        f.Trace,
+			"boundary":     f.Boundary,
+			"validation":   f.Validation,
+			"prior_art":    f.PriorArt,
+			"reach":        f.Reach,
+			"rating":       f.Rating,
+			"dup_check":    f.DupCheck,
+		})
 	}
 
 	var statusRestore string

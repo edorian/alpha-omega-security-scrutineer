@@ -78,6 +78,91 @@ func TestPersistStreamedFinding_reconcilesWithFinalReport(t *testing.T) {
 	}
 }
 
+// A finding streamed with only the required minimal fields and then
+// reconciled with the same scan's final report must pick up the full
+// parser-owned content of the final report: the streamed row is a preview,
+// the report is the authoritative version of the same finding.
+func TestPersistStreamedFinding_sameScanReconcileRefreshesFinalReportContent(t *testing.T) {
+	w, repo := newStreamWorker(t)
+	scan := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, SkillName: "sd", Status: db.ScanRunning, Commit: "aaa", ScanGroup: "grp-1"}
+	w.DB.Create(scan)
+
+	if _, err := w.PersistStreamedFinding(scan, []byte(`{"title":"t","severity":"High","location":"main.go:10"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	report := `{"findings":[{
+		"id":"F1","title":"t","severity":"Critical","confidence":"High",
+		"location":"main.go:22","locations":["main.go:22","util.go:7"],
+		"sinks":["exec","eval"],"affected":"<= 2.4.1",
+		"reachability":"reachable","quality_tier":"high",
+		"trace":"user input reaches exec","boundary":"public HTTP handler",
+		"validation":"no sanitisation on the path segment",
+		"prior_art":"GHSA-xxxx-yyyy-zzzz","reach":"2 of 3 entry points exposed",
+		"rating":"exploitable pre-auth","dup_check":"distinct sink from F2"
+	}]}`
+	if err := w.parseFindingsOutput(&db.Skill{}, scan, report, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	var rows []db.Finding
+	w.DB.Find(&rows)
+	if len(rows) != 1 {
+		t.Fatalf("streamed-then-final reconciled to %d rows, want 1", len(rows))
+	}
+	got := rows[0]
+	for _, tc := range []struct{ field, got, want string }{
+		{"finding_id", got.FindingID, "F1"},
+		{"severity", got.Severity, "Critical"},
+		{"confidence", got.Confidence, "high"},
+		{"sinks", got.Sinks, "exec, eval"},
+		{"location", got.Location, "main.go:22"},
+		{"locations", got.Locations, "main.go:22\nutil.go:7"},
+		{"affected", got.Affected, "<= 2.4.1"},
+		{"reachability", got.Reachability, "reachable"},
+		{"quality_tier", got.QualityTier, "high"},
+		{"trace", got.Trace, "user input reaches exec"},
+		{"boundary", got.Boundary, "public HTTP handler"},
+		{"validation", got.Validation, "no sanitisation on the path segment"},
+		{"prior_art", got.PriorArt, "GHSA-xxxx-yyyy-zzzz"},
+		{"reach", got.Reach, "2 of 3 entry points exposed"},
+		{"rating", got.Rating, "exploitable pre-auth"},
+		{"dup_check", got.DupCheck, "distinct sink from F2"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want final-report value %q", tc.field, tc.got, tc.want)
+		}
+	}
+}
+
+// When the CWE carries the fingerprint the title is not folded in, so the
+// final report may reword it; same-scan reconciliation must keep the final
+// wording. Cross-scan re-observation deliberately keeps the original title
+// (TestParseFindingsOutput_dedupesAcrossScans locks that in).
+func TestPersistStreamedFinding_sameScanReconcileRefreshesRewordedTitle(t *testing.T) {
+	w, repo := newStreamWorker(t)
+	scan := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, SkillName: "sd", Status: db.ScanRunning, Commit: "aaa", ScanGroup: "grp-1"}
+	w.DB.Create(scan)
+
+	if _, err := w.PersistStreamedFinding(scan, []byte(`{"title":"SQLi","severity":"High","cwe":"CWE-89","location":"db.go:5"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	report := `{"findings":[{"id":"F1","title":"SQL injection in query builder","severity":"High","cwe":"CWE-89","location":"db.go:5"}]}`
+	if err := w.parseFindingsOutput(&db.Skill{}, scan, report, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	var rows []db.Finding
+	w.DB.Find(&rows)
+	if len(rows) != 1 {
+		t.Fatalf("streamed-then-final reconciled to %d rows, want 1", len(rows))
+	}
+	if rows[0].Title != "SQL injection in query builder" {
+		t.Errorf("title = %q, want the final-report wording", rows[0].Title)
+	}
+}
+
 // A finding streamed mid-scan but then left out of the final report.json must
 // survive (a sibling may have stood down citing it) yet carry a `retracted`
 // history row so it is no longer indistinguishable from a confirmed finding.
