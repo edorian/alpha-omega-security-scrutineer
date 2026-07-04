@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"gorm.io/gorm"
 
 	"scrutineer/internal/db"
 )
@@ -91,9 +92,7 @@ func (s *Server) findingCSAF(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "finding is a duplicate; export not available", http.StatusGone)
 		return
 	}
-	var dependentCount int64
-	s.DB.Model(&db.Dependent{}).Where("repository_id = ?", f.RepositoryID).Count(&dependentCount)
-	if dependentCount == 0 {
+	if !repoHasDependents(s.DB, f.RepositoryID) {
 		http.Error(w, "CSAF VEX export is unavailable because this repository has no recorded dependents", http.StatusNotFound)
 		return
 	}
@@ -299,6 +298,12 @@ func loadFindingDependents(s *Server, rows []db.FindingDependent) map[uint]db.De
 		out[d.ID] = d
 	}
 	return out
+}
+
+func repoHasDependents(gdb *gorm.DB, repoID uint) bool {
+	var dependentCount int64
+	gdb.Model(&db.Dependent{}).Where("repository_id = ?", repoID).Count(&dependentCount)
+	return dependentCount > 0
 }
 
 func dependentProductID(d db.Dependent) string {
