@@ -122,7 +122,8 @@ func hardenedNetworkName(scanID uint) string {
 const proxySidecarPrefix = "scrutineer-proxy-"
 
 // proxySidecarPort is the fixed port the egress proxy sidecar listens on inside
-// its own network namespace. It does not collide with anything: each sidecar is
+// its own network namespace, bound to its --internal address only (see
+// SidecarListenFirstIface). It does not collide with anything: each sidecar is
 // alone in its container, and the scan reaches it by its --internal IP (e.g.
 // 10.89.1.2:3128), not on a shared host port.
 const proxySidecarPort = "3128"
@@ -817,12 +818,17 @@ func (d ContainerRunner) setupHardenedNetwork(sj SkillJob, image string) (harden
 }
 
 // startProxySidecar launches the egress proxy as a detached container on the
-// default (egress) network, then connects it to the per-scan --internal network
-// so the scan can reach it. It returns the host:port the scan points HTTPS_PROXY
-// at and a cleanup that force-removes the container. The sidecar self-gates its
-// listener on reaching the host skill API (see runProxy / WaitHostAPIReachable),
-// so a successful proxy-reach probe in verifyHardenedNetwork transitively proves
-// the whole scan -> sidecar -> host-API chain.
+// per-scan --internal network, then connects the default (egress) network as a
+// second leg. Internal-first ordering is load-bearing: it makes the internal
+// leg the sidecar's first interface, which is the one its listener binds to
+// (see SidecarListenFirstIface), keeping the proxy port unreachable from the
+// shared default bridge. The sidecar cannot reach the host skill API until the
+// egress leg attaches; its readiness probe polls through that window. It
+// returns the host:port the scan points HTTPS_PROXY at and a cleanup that
+// force-removes the container. The sidecar self-gates its listener on reaching
+// the host skill API (see runProxy / WaitHostAPIReachable), so a successful
+// proxy-reach probe in verifyHardenedNetwork transitively proves the whole
+// scan -> sidecar -> host-API chain.
 func (d ContainerRunner) startProxySidecar(sj SkillJob, network string) (endpoint string, cleanup func(), err error) {
 	noop := func() {}
 	if d.Egress.GatewayIP == "" {
@@ -836,14 +842,17 @@ func (d ContainerRunner) startProxySidecar(sj SkillJob, network string) (endpoin
 	// and pin the network; remove it first (no-op when absent).
 	rmName()
 
-	if out, e := exec.Command(d.Runtime.bin(), d.proxySidecarRunArgs(name)...).CombinedOutput(); e != nil {
+	if out, e := exec.Command(d.Runtime.bin(), d.proxySidecarRunArgs(name, network)...).CombinedOutput(); e != nil {
 		rmName() // a failed `run -d` can still leave a created container behind
 		return "", noop, fmt.Errorf("%s run sidecar: %w: %s", d.Runtime.bin(), e, strings.TrimSpace(string(out)))
 	}
 
-	if out, e := exec.Command(d.Runtime.bin(), "network", "connect", "--", network, name).CombinedOutput(); e != nil {
+	// The egress leg. `network connect` only works on netavark bridges, so pin
+	// the named default bridge rather than the rootless default (pasta), which
+	// rejects it ("pasta is not supported: invalid network mode").
+	if out, e := exec.Command(d.Runtime.bin(), "network", "connect", "--", "podman", name).CombinedOutput(); e != nil {
 		rmName()
-		return "", noop, fmt.Errorf("%s network connect %s: %w: %s", d.Runtime.bin(), network, e, strings.TrimSpace(string(out)))
+		return "", noop, fmt.Errorf("%s network connect podman: %w: %s", d.Runtime.bin(), e, strings.TrimSpace(string(out)))
 	}
 	// The --internal network runs no DNS, so the scan must reach the sidecar by
 	// its address on that network rather than by name.
@@ -874,31 +883,29 @@ func (d ContainerRunner) sidecarNetworkIP(name, network string) (string, error) 
 
 // proxySidecarRunArgs builds the detached `run` args for the egress proxy
 // sidecar: locked down (cap-drop ALL, read-only rootfs, no-new-privileges, a
-// small noexec /tmp tmpfs), on the default egress network with the host-gateway
-// alias wired to the resolved IPv4 so it reaches the host skill API, running
-// `scrutineer proxy` with its config passed via env. It deliberately runs the
+// small noexec /tmp tmpfs), on the per-scan --internal network with the
+// host-gateway alias wired to the resolved IPv4 so it reaches the host skill
+// API once its egress leg attaches, running `scrutineer proxy` with its config
+// passed via env. The --internal network MUST be the run-time network: that
+// makes it the sidecar's first interface, the one the SidecarListenFirstIface
+// listen keyword binds to; startProxySidecar connects the default (egress)
+// bridge afterwards, so the listener never faces it. It deliberately runs the
 // DEFAULT runner image (d.image()), which is guaranteed to carry the scrutineer
-// binary, not the per-scan profile image. It is NOT attached to the --internal
-// network here; startProxySidecar connects that leg after the container exists.
-// No --rm, so a sidecar that exits on an unreachable host API lingers long
-// enough for verifyHardenedNetwork to capture its logs.
-func (d ContainerRunner) proxySidecarRunArgs(name string) []string {
+// binary, not the per-scan profile image. No --rm, so a sidecar that exits on
+// an unreachable host API lingers long enough for verifyHardenedNetwork to
+// capture its logs.
+func (d ContainerRunner) proxySidecarRunArgs(name, network string) []string {
 	args := []string{
 		"run", "-d",
 		"--name", name,
-		// The sidecar is dual-homed: startProxySidecar attaches the per-scan
-		// --internal network to it after launch with `podman network connect`,
-		// which only works on a netavark bridge. The rootless default (pasta)
-		// rejects it ("pasta is not supported: invalid network mode"), so pin the
-		// default bridge for the egress leg rather than inheriting pasta.
-		"--network", "podman",
+		"--network", network,
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
 		"--read-only",
 		"--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
 		"--add-host", HostGatewayAlias + ":" + d.Egress.GatewayIP,
 	}
-	for _, e := range EgressSidecarEnv(d.Egress, ":"+proxySidecarPort) {
+	for _, e := range EgressSidecarEnv(d.Egress, SidecarListenFirstIface+":"+proxySidecarPort) {
 		args = append(args, "-e", e)
 	}
 	return append(args, "--", d.image(), "scrutineer", "proxy")
@@ -908,7 +915,10 @@ func (d ContainerRunner) proxySidecarRunArgs(name string) []string {
 // container runner injects into the egress proxy sidecar. It is the single
 // source of truth for the host<->sidecar env contract: the runner sets these
 // (proxySidecarRunArgs) and `scrutineer proxy` reads them back, so both sides
-// must agree on the names. listen is the full listen address (e.g. ":3128").
+// must agree on the names. listen is the full listen address; its host may be
+// the SidecarListenFirstIface keyword, which the sidecar resolves to its own
+// --internal address at startup (the host cannot know it before the container
+// exists).
 func EgressSidecarEnv(cfg EgressSidecarConfig, listen string) []string {
 	return []string{
 		"SCRUTINEER_PROXY_TOKEN=" + cfg.Token,

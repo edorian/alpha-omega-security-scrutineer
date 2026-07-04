@@ -615,7 +615,7 @@ func TestProxySidecarRunArgs(t *testing.T) {
 			GatewayIP: "192.0.2.9",
 		},
 	}
-	args := d.proxySidecarRunArgs("scrutineer-proxy-7")
+	args := d.proxySidecarRunArgs("scrutineer-proxy-7", "scrutineer-hardened-7")
 
 	// Detached and locked down -- the sidecar runs scrutineer's own trusted code
 	// but gets the same defense-in-depth as the scan container.
@@ -635,19 +635,24 @@ func TestProxySidecarRunArgs(t *testing.T) {
 	if !hasAdjacent(args, "--add-host", HostGatewayAlias+":192.0.2.9") {
 		t.Errorf("missing host-gateway add-host: %v", args)
 	}
-	// Must start on a connectable bridge, not the rootless default (pasta): the
-	// per-scan --internal network is attached later with `podman network
-	// connect`, which pasta-mode containers reject ("invalid network mode").
-	if !hasAdjacent(args, "--network", "podman") {
-		t.Errorf("sidecar must start on a bridge network so --internal can be connected: %v", args)
+	// Must start on the per-scan --internal network so it is the sidecar's
+	// FIRST interface -- the one the first-iface listen keyword binds to. The
+	// default bridge (egress leg) is connected by startProxySidecar afterwards
+	// and must never appear here, or the listener would face it.
+	if !hasAdjacent(args, "--network", "scrutineer-hardened-7") {
+		t.Errorf("sidecar must start on the per-scan --internal network: %v", args)
 	}
-	// Config via env.
+	if hasAdjacent(args, "--network", "podman") {
+		t.Errorf("the egress leg must be connected after launch, not at run time: %v", args)
+	}
+	// Config via env; the listen host is the keyword the sidecar resolves to its
+	// --internal leg, not an all-interfaces bind.
 	for _, kv := range []string{
 		"SCRUTINEER_PROXY_TOKEN=tok",
 		"SCRUTINEER_PROXY_ALLOW=*.anthropic.com,host.docker.internal",
 		"SCRUTINEER_PROXY_API_HOST=192.0.2.9",
 		"SCRUTINEER_PROXY_API_PORT=8080",
-		"SCRUTINEER_PROXY_LISTEN=:3128",
+		"SCRUTINEER_PROXY_LISTEN=" + SidecarListenFirstIface + ":3128",
 	} {
 		if !hasAdjacent(args, "-e", kv) {
 			t.Errorf("missing env %q in %v", kv, args)

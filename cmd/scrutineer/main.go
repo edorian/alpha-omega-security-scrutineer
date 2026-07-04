@@ -670,23 +670,32 @@ func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRu
 		allow = append(allow, apiHost)
 	}
 	token := worker.NewProxyToken()
-	port, err := worker.StartEgressProxy(&worker.EgressProxy{
-		Allow:    allow,
-		Token:    token,
-		APIPort:  addrPort(f.addr),
-		APIHosts: []string{apiHost},
-		Log:      log,
-	})
-	if err != nil {
-		return nil, "", fmt.Errorf("start egress proxy: %w", err)
-	}
-	// Rootless --hardened runs the egress proxy as a sidecar reusing the host
-	// proxy's allow-list and token, so resolve its config now that both exist.
+	// Rootless --hardened runs the egress proxy as a per-scan sidecar reusing
+	// this allow-list and token; resolve it before the in-process host proxy so
+	// the latter can be skipped when the sidecar is in charge.
 	if f.hardened {
 		egress, err = resolveEgressSidecar(rt, f, allow, token, log)
 		if err != nil {
 			return nil, "", err
 		}
+	}
+	// With a sidecar every scan routes through it (buildRunArgs shadows
+	// ProxyURL with the sidecar endpoint), so the host proxy would only open an
+	// unused host port -- skip it and leave port at 0 / ProxyURL empty.
+	var port int
+	var proxyURL string
+	if egress.GatewayIP == "" {
+		port, err = worker.StartEgressProxy(&worker.EgressProxy{
+			Allow:    allow,
+			Token:    token,
+			APIPort:  addrPort(f.addr),
+			APIHosts: []string{apiHost},
+			Log:      log,
+		})
+		if err != nil {
+			return nil, "", fmt.Errorf("start egress proxy: %w", err)
+		}
+		proxyURL = worker.ProxyURLForHost(token, apiHost, port)
 	}
 	log.Info("container runtime detected, using containerised runner",
 		"runtime", rt.Bin, "rootless", rt.Rootless, "image", f.runnerImage,
@@ -701,7 +710,7 @@ func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRu
 		Image:               f.runnerImage,
 		Effort:              f.effort,
 		Harness:             h,
-		ProxyURL:            worker.ProxyURLForHost(token, apiHost, port),
+		ProxyURL:            proxyURL,
 		FullClone:           f.fullClone(),
 		MaxTurns:            f.maxTurns,
 		AnthropicBaseURL:    f.anthropicBaseURL,
