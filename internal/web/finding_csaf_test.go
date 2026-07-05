@@ -14,6 +14,23 @@ import (
 
 const wantAttackVectorNetwork = "NETWORK"
 
+func TestRepoHasDependentsReturnsCountError(t *testing.T) {
+	gdb, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqldb, err := gdb.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqldb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repoHasDependents(gdb, 1); err == nil {
+		t.Fatal("expected count error after closing database")
+	}
+}
+
 func seedCSAFFinding(t *testing.T, s *Server, mut func(*db.Finding)) db.Finding {
 	t.Helper()
 	repo := db.Repository{

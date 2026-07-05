@@ -1574,7 +1574,10 @@ func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
 		selected[l.Name] = true
 	}
 	_, verifyInFlight := s.openFindingSkillScan(f.ID, verifySkillName)
-	hasDependents := repoHasDependents(s.DB, scan.RepositoryID)
+	hasDependents, err := repoHasDependents(s.DB, scan.RepositoryID)
+	if err != nil {
+		s.Log.Warn("count dependents", "repo", scan.RepositoryID, "err", err)
+	}
 
 	type exposureRow struct {
 		Dep    db.Dependent

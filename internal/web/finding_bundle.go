@@ -114,7 +114,10 @@ func (s *Server) bundleEntries(f *db.Finding, repo *db.Repository) ([]bundleEntr
 		return nil, fmt.Errorf("load finding dependents: %w", err)
 	}
 	deps := loadFindingDependents(s, fdRows)
-	hasDependents := repoHasDependents(s.DB, f.RepositoryID)
+	hasDependents, err := repoHasDependents(s.DB, f.RepositoryID)
+	if err != nil {
+		return nil, fmt.Errorf("count dependents: %w", err)
+	}
 	// Scan load is best-effort: a finding with a missing parent scan
 	// row (e.g. a scan that was deleted) still has a valid bundle to
 	// produce, since the bundle does not embed scan-specific fields.
