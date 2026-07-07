@@ -14,6 +14,23 @@ import (
 
 const wantAttackVectorNetwork = "NETWORK"
 
+func TestRepoHasDependentsReturnsCountError(t *testing.T) {
+	gdb, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqldb, err := gdb.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqldb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repoHasDependents(gdb, 1); err == nil {
+		t.Fatal("expected count error after closing database")
+	}
+}
+
 func seedCSAFFinding(t *testing.T, s *Server, mut func(*db.Finding)) db.Finding {
 	t.Helper()
 	repo := db.Repository{
@@ -44,30 +61,6 @@ func seedCSAFFinding(t *testing.T, s *Server, mut func(*db.Finding)) db.Finding 
 	s.DB.Create(&f)
 	dep := db.Dependent{RepositoryID: repo.ID, Name: "downstream-app", Ecosystem: "npm", RepositoryURL: "https://github.com/example/downstream-app"}
 	s.DB.Create(&dep)
-	return f
-}
-
-func seedCSAFFindingWithoutDependents(t *testing.T, s *Server) db.Finding {
-	t.Helper()
-	repo := db.Repository{
-		URL:      "https://github.com/example/app.git",
-		Name:     "app",
-		FullName: "example/app",
-		HTMLURL:  "https://github.com/example/app",
-	}
-	s.DB.Create(&repo)
-	scan := db.Scan{RepositoryID: repo.ID, Kind: "skill", Status: db.ScanDone, SkillName: "security-deep-dive"}
-	s.DB.Create(&scan)
-	f := db.Finding{
-		ScanID:       scan.ID,
-		RepositoryID: repo.ID,
-		FindingID:    "F1",
-		Title:        "Unsafe redirect in app route",
-		Severity:     "Medium",
-		Status:       db.FindingTriaged,
-		CWE:          "CWE-601",
-	}
-	s.DB.Create(&f)
 	return f
 }
 
@@ -135,7 +128,8 @@ func TestFindingCSAF_noDependentsReturns404(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
 
-	f := seedCSAFFindingWithoutDependents(t, s)
+	f := seedCSAFFinding(t, s, nil)
+	s.DB.Where("repository_id = ?", f.RepositoryID).Delete(&db.Dependent{})
 	w := getCSAF(t, s, f.ID)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status %d, want 404: %s", w.Code, w.Body)

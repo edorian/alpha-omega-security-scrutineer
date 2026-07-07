@@ -114,8 +114,8 @@ func (s *Server) bundleEntries(f *db.Finding, repo *db.Repository) ([]bundleEntr
 		return nil, fmt.Errorf("load finding dependents: %w", err)
 	}
 	deps := loadFindingDependents(s, fdRows)
-	var dependentCount int64
-	if err := s.DB.Model(&db.Dependent{}).Where("repository_id = ?", f.RepositoryID).Count(&dependentCount).Error; err != nil {
+	hasDependents, err := repoHasDependents(s.DB, f.RepositoryID)
+	if err != nil {
 		return nil, fmt.Errorf("count dependents: %w", err)
 	}
 	// Scan load is best-effort: a finding with a missing parent scan
@@ -141,7 +141,7 @@ func (s *Server) bundleEntries(f *db.Finding, repo *db.Repository) ([]bundleEntr
 	entries = append(entries, bundleEntry{Name: "osv.json", Data: osvRaw})
 	contents["osv.json"] = "OSV 1.6.0 record (machine-readable advisory)"
 
-	if dependentCount > 0 {
+	if hasDependents {
 		csafRaw, err := json.MarshalIndent(buildCSAF(*f, *repo, refs, pkgs, fdRows, deps), "", "  ")
 		if err != nil {
 			return nil, fmt.Errorf("build CSAF: %w", err)
