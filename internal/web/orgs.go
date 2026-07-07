@@ -83,7 +83,7 @@ func (s *Server) orgsList(w http.ResponseWriter, r *http.Request) {
 			WHERE r.owner != ''
 			  AND `+aliasedFindingsScanFilter+`
 			GROUP BY r.owner
-		`, deepDiveSkillName, vulnScanSkillName).Scan(&counts)
+		`, deepDiveSkillName, vulnScanSkillName, advisoryDeepDiveSkillName).Scan(&counts)
 		for _, x := range counts {
 			findingCounts[x.Owner] = x.N
 		}

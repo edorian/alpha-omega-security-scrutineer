@@ -82,7 +82,7 @@ func (s *Server) maintainersList(w http.ResponseWriter, r *http.Request) {
 			WHERE rm.maintainer_id IN ?
 			  AND `+aliasedFindingsScanFilter+`
 			GROUP BY rm.maintainer_id
-		`, ids, deepDiveSkillName, vulnScanSkillName).Scan(&counts)
+		`, ids, deepDiveSkillName, vulnScanSkillName, advisoryDeepDiveSkillName).Scan(&counts)
 		for _, c := range counts {
 			findingCounts[c.MaintainerID] = c.N
 		}
