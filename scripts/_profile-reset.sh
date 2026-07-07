@@ -23,10 +23,11 @@ desc="${desc:?internal error: sourcing wrapper must set desc}"
 
 force=0
 for a in "$@"; do
-  case "$a" in
     -f|--force) force=1 ;;
-    *) printf 'unknown argument: %s\nusage: %s [--force]\n' "$a" "$(basename "$0")" >&2; exit 2 ;;
-  esac
+    *)
+      printf 'unknown argument: %s\nusage: %s [-f|--force]\n' "$a" "$(basename "$0")" >&2
+      exit 2
+      ;;
 done
 
 rt=podman
