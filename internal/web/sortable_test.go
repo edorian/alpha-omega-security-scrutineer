@@ -71,6 +71,24 @@ func TestSortCtxDir(t *testing.T) {
 	}
 }
 
+// assertOrder fails fatally when either marker is missing from body, then
+// checks first appears before second. A bare strings.Index comparison passes
+// silently when a row is absent (Index returns -1), which would mask a
+// rendering regression; this makes "both present, and in order" the claim.
+func assertOrder(t *testing.T, body, first, second string) {
+	t.Helper()
+	i, j := strings.Index(body, first), strings.Index(body, second)
+	if i < 0 {
+		t.Fatalf("%q not found in response", first)
+	}
+	if j < 0 {
+		t.Fatalf("%q not found in response", second)
+	}
+	if i > j {
+		t.Errorf("%q should appear before %q", first, second)
+	}
+}
+
 // TestFindings_sortDirection proves the folded-token direction actually
 // reaches the ORDER BY: the same column reverses between .asc and its default.
 func TestFindings_sortDirection(t *testing.T) {
@@ -95,9 +113,7 @@ func TestFindings_sortDirection(t *testing.T) {
 
 	// Default severity direction is desc: Critical before Low.
 	body := get("?sort=severity")
-	if strings.Index(body, "crit-one") > strings.Index(body, "low-one") {
-		t.Errorf("sort=severity should put Critical before Low")
-	}
+	assertOrder(t, body, "crit-one", "low-one")
 	// The active header must offer the flip to ascending.
 	if !strings.Contains(body, "sort=severity.asc") {
 		t.Errorf("active severity header should link to the ascending flip")
@@ -118,8 +134,51 @@ func TestFindings_sortDirection(t *testing.T) {
 
 	// Explicit ascending reverses it: Low before Critical.
 	body = get("?sort=severity.asc")
-	if strings.Index(body, "low-one") > strings.Index(body, "crit-one") {
-		t.Errorf("sort=severity.asc should put Low before Critical")
+	assertOrder(t, body, "low-one", "crit-one")
+}
+
+// TestSort_defaultColumnActiveWithoutParam guards the landing page with no
+// ?sort — the primary nav entry path. render() seeds the sorter from each
+// handler's effective sort, so every index whose default IS a real column must
+// render that header active: aria-sort set and the first click linking to the
+// direction FLIP, not an idle header whose first click silently re-applies the
+// default order. Sweeps all four affected tables and both default directions
+// (name asc; advisories severity desc).
+func TestSort_defaultColumnActiveWithoutParam(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	// One row per table — the index templates only draw the sortable header row
+	// when the result set is non-empty. The repo's Owner seeds the orgs index.
+	repo := db.Repository{URL: "https://x/def-repo", Name: "def-repo", Owner: "anorg"}
+	s.DB.Create(&repo)
+	s.DB.Create(&db.Maintainer{Login: "amaint", Name: "amaint", Status: db.MaintainerActive})
+	s.DB.Create(&db.Package{RepositoryID: repo.ID, Name: "apkg", Ecosystem: "rubygems"})
+	s.DB.Create(&db.Advisory{RepositoryID: repo.ID, UUID: "u1", Title: "adv", Severity: "HIGH", CVSSScore: 7.5})
+
+	for _, tc := range []struct {
+		path, ariaSort, flip string
+	}{
+		{"/maintainers", "ascending", "sort=name.desc"},
+		{"/orgs", "ascending", "sort=name.desc"},
+		{"/packages", "ascending", "sort=name.desc"},
+		{"/advisories", "descending", "sort=severity.asc"},
+	} {
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, localReq("GET", tc.path))
+		if w.Code != 200 {
+			t.Fatalf("GET %s status %d", tc.path, w.Code)
+		}
+		body := w.Body.String()
+		// The default column announces its direction even with no ?sort.
+		if want := `aria-sort="` + tc.ariaSort + `"`; !strings.Contains(body, want) {
+			t.Errorf("GET %s: default column should set %s without ?sort", tc.path, want)
+		}
+		// Its header links to the flip, so the first click reverses direction
+		// instead of re-applying the order the page already shows.
+		if !strings.Contains(body, tc.flip) {
+			t.Errorf("GET %s: default header should link to the flip (%s)", tc.path, tc.flip)
+		}
 	}
 }
 
@@ -149,23 +208,13 @@ func TestSort_derivedColumns(t *testing.T) {
 		}
 		return w.Body.String()
 	}
-	before := func(body, a, b string) bool { return strings.Index(body, a) < strings.Index(body, b) }
-
 	// Last scan: most-recently-scanned repo first, reversed under .asc.
-	if b := get("/?sort=scanned"); !before(b, "repo-new", "repo-old") {
-		t.Errorf("sort=scanned should put the most-recently-scanned repo first")
-	}
-	if b := get("/?sort=scanned.asc"); !before(b, "repo-old", "repo-new") {
-		t.Errorf("sort=scanned.asc should reverse")
-	}
+	assertOrder(t, get("/?sort=scanned"), "repo-new", "repo-old")
+	assertOrder(t, get("/?sort=scanned.asc"), "repo-old", "repo-new")
 	// Status: running (rank 0) before done (rank 3) under the asc default.
-	if b := get("/?sort=status"); !before(b, "repo-new", "repo-old") {
-		t.Errorf("sort=status should rank the running repo before the done repo")
-	}
+	assertOrder(t, get("/?sort=status"), "repo-new", "repo-old")
 	// Scans Findings: the higher findings_count first under the desc default.
-	if b := get("/scans?sort=findings"); !before(b, "repo-new", "repo-old") {
-		t.Errorf("/scans?sort=findings should rank the 9-finding scan before the 2-finding scan")
-	}
+	assertOrder(t, get("/scans?sort=findings"), "repo-new", "repo-old")
 }
 
 // TestSort_maliciousParamFallsBackSafely feeds hostile ?sort= values (unknown

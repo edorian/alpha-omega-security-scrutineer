@@ -416,7 +416,18 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, dat
 	data["Theme"] = resolveTheme(r)
 	data["ColorScheme"] = resolveColorScheme(r)
 	data["Flash"] = popFlash(w, r)
-	data["Sorter"] = sortCtx{path: r.URL.Path, query: r.URL.Query()}
+	// Seed the sorter with the handler's EFFECTIVE sort (data["Sort"]) rather
+	// than the raw ?sort param. That token is already the sanitized, defaulted
+	// sort the ORDER BY actually used, so folding it in makes a default or
+	// sanitized sort mark its column active (aria-sort + arrow) and makes the
+	// first header click flip direction instead of silently repeating the
+	// default. When ?sort is a valid explicit token the two agree, so this is a
+	// no-op there; non-index pages set no "Sort" and keep the raw query.
+	sorterQuery := r.URL.Query()
+	if eff, ok := data["Sort"].(string); ok && eff != "" {
+		sorterQuery.Set("sort", eff)
+	}
+	data["Sorter"] = sortCtx{path: r.URL.Path, query: sorterQuery}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, name, data); err != nil {
 		s.Log.Error("render", "tmpl", name, "err", err)
