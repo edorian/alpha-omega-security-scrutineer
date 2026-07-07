@@ -34,13 +34,13 @@ func (s *Server) sbomList(w http.ResponseWriter, r *http.Request) {
 	sortCol, dir := splitSort(r.URL.Query().Get("sort"), "")
 	switch sortCol {
 	case "name":
-		q = q.Order("name " + dirOr(dir, "asc")).Order("id desc")
+		q = q.Order(orderByExpr("name", dir, false)).Order("id desc")
 	case "format":
-		q = q.Order("format " + dirOr(dir, "asc")).Order("id desc")
+		q = q.Order(orderByExpr("format", dir, false)).Order("id desc")
 	case "packages":
-		q = q.Order("package_count " + dirOr(dir, "desc")).Order("id desc")
+		q = q.Order(orderByExpr("package_count", dir, true)).Order("id desc")
 	case "uploaded":
-		q = q.Order("created_at " + dirOr(dir, "desc")).Order("id desc")
+		q = q.Order(orderByExpr("created_at", dir, true)).Order("id desc")
 	default:
 		sortCol, dir = defaultSort, ""
 		q = q.Order("id desc")

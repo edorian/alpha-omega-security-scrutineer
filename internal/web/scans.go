@@ -27,16 +27,16 @@ func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 	sortCol, dir := splitSort(r.URL.Query().Get("sort"), "")
 	switch sortCol {
 	case "id":
-		q = q.Order("scans.id " + dirOr(dir, "desc"))
+		q = q.Order(orderByExpr("scans.id", dir, true))
 	case "skill":
-		q = q.Order("skill_name " + dirOr(dir, "asc")).Order("scans.id desc")
+		q = q.Order(orderByExpr("skill_name", dir, false)).Order("scans.id desc")
 	case statusKey:
-		q = q.Order("status " + dirOr(dir, "asc")).Order("scans.id desc")
+		q = q.Order(orderByExpr("status", dir, false)).Order("scans.id desc")
 	case sortRepository:
-		q = q.Joins("Repository").Order("`Repository`.name " + dirOr(dir, "asc")).Order("scans.id desc")
+		q = q.Joins("Repository").Order(orderByExpr("`Repository`.name", dir, false)).Order("scans.id desc")
 	case "findings":
 		// findings_count is a denormalised column on the scan row.
-		q = q.Order("findings_count " + dirOr(dir, "desc")).Order("scans.id desc")
+		q = q.Order(orderByExpr("findings_count", dir, true)).Order("scans.id desc")
 	default:
 		sortCol, dir = defaultSort, ""
 		q = q.Order("status_priority, scans.id desc")

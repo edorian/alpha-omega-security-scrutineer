@@ -613,13 +613,13 @@ func (s *Server) repoList(w http.ResponseWriter, r *http.Request) {
 	const nameSort = "name"
 	switch sortCol {
 	case nameSort:
-		q = q.Order(nameSort + " " + dirOr(dir, "asc"))
+		q = q.Order(orderByExpr(nameSort, dir, false))
 	case "stars":
-		q = q.Order("stars " + dirOr(dir, "desc"))
+		q = q.Order(orderByExpr("stars", dir, true))
 	case "language":
-		q = q.Order("languages " + dirOr(dir, "asc")).Order("name")
+		q = q.Order(orderByExpr("languages", dir, false)).Order("name")
 	case "size":
-		q = q.Order("disk_bytes " + dirOr(dir, "desc")).Order("updated_at desc")
+		q = q.Order(orderByExpr("disk_bytes", dir, true)).Order("updated_at desc")
 	case "findings":
 		// Correlated subquery keeps the existing Count/Find chain intact
 		// (a JOIN+GROUP BY would change what Count(&total) returns). Low-
@@ -929,21 +929,21 @@ func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 	case sortSeverity:
 		// severityOrder ranks the most severe LOWEST, so the intuitive default
 		// (most severe first, shown as "desc") is ascending on the expression;
-		// flip the SQL direction relative to the logical one.
-		q = q.Order("(" + severityOrder + ") " + flipSQLDir(dirOr(dir, "desc"))).Order("findings.id desc")
+		// !wantDesc flips the SQL direction relative to the logical one.
+		q = q.Order(orderBySuffix("("+severityOrder+")", !wantDesc(dir, true))).Order("findings.id desc")
 	case sortRepository:
 		q = q.Joins("JOIN repositories r ON r.id = findings.repository_id").
-			Order("r.name " + dirOr(dir, "asc")).Order("findings.id desc")
+			Order(orderByExpr("r.name", dir, false)).Order("findings.id desc")
 	case "title":
-		q = q.Order("findings.title " + dirOr(dir, "asc")).Order("findings.id desc")
+		q = q.Order(orderByExpr("findings.title", dir, false)).Order("findings.id desc")
 	case statusKey:
-		q = q.Order("findings.status " + dirOr(dir, "asc")).Order("findings.id desc")
+		q = q.Order(orderByExpr("findings.status", dir, false)).Order("findings.id desc")
 	case "repo_id":
-		q = q.Order("findings.repository_id " + dirOr(dir, "asc")).Order("findings.id desc")
+		q = q.Order(orderByExpr("findings.repository_id", dir, false)).Order("findings.id desc")
 	case "cwe":
-		q = q.Order("findings.cwe " + dirOr(dir, "asc")).Order("findings.id desc")
+		q = q.Order(orderByExpr("findings.cwe", dir, false)).Order("findings.id desc")
 	case "scan":
-		q = q.Order("findings.scan_id " + dirOr(dir, "desc")).Order("findings.id desc")
+		q = q.Order(orderByExpr("findings.scan_id", dir, true)).Order("findings.id desc")
 	default:
 		sortCol, dir = defaultSort, ""
 		q = q.Order("id desc")
@@ -1482,17 +1482,17 @@ func (s *Server) packages(w http.ResponseWriter, r *http.Request) {
 	sortCol, dir := splitSort(r.URL.Query().Get("sort"), "")
 	switch sortCol {
 	case "name":
-		q = q.Order("name " + dirOr(dir, "asc"))
+		q = q.Order(orderByExpr("name", dir, false))
 	case "downloads":
-		q = q.Order("downloads " + dirOr(dir, "desc"))
+		q = q.Order(orderByExpr("downloads", dir, true))
 	case "dependents":
-		q = q.Order("dependent_repos " + dirOr(dir, "desc"))
+		q = q.Order(orderByExpr("dependent_repos", dir, true))
 	case "ecosystem":
-		q = q.Order("ecosystem " + dirOr(dir, "asc")).Order("name")
+		q = q.Order(orderByExpr("ecosystem", dir, false)).Order("name")
 	case "registry":
-		q = q.Order("registry_url " + dirOr(dir, "asc")).Order("name")
+		q = q.Order(orderByExpr("registry_url", dir, false)).Order("name")
 	case "latest":
-		q = q.Order("latest_release_at " + dirOr(dir, "desc")).Order("name")
+		q = q.Order(orderByExpr("latest_release_at", dir, true)).Order("name")
 	default:
 		sortCol, dir = "name", ""
 		q = q.Order("name")
@@ -1552,14 +1552,14 @@ func (s *Server) advisoriesList(w http.ResponseWriter, r *http.Request) {
 	sortCol, dir := splitSort(r.URL.Query().Get("sort"), "")
 	switch sortCol {
 	case "newest":
-		q = q.Order("published_at " + dirOr(dir, "desc")).Order("id desc")
+		q = q.Order(orderByExpr("published_at", dir, true)).Order("id desc")
 	case sortRepository:
 		q = q.Joins("JOIN repositories r ON r.id = advisories.repository_id").
-			Order("r.name " + dirOr(dir, "asc")).Order("advisories.cvss_score desc")
+			Order(orderByExpr("r.name", dir, false)).Order("advisories.cvss_score desc")
 	case "title":
-		q = q.Order("title " + dirOr(dir, "asc")).Order("id desc")
+		q = q.Order(orderByExpr("title", dir, false)).Order("id desc")
 	case sortSeverity:
-		q = q.Order("cvss_score " + dirOr(dir, "desc")).Order("id desc")
+		q = q.Order(orderByExpr("cvss_score", dir, true)).Order("id desc")
 	default:
 		sortCol, dir = sortSeverity, ""
 		q = q.Order("cvss_score desc, id desc")

@@ -32,9 +32,11 @@ func splitSort(token, defDir string) (key, dir string) {
 	return token, defDir
 }
 
-// dirOr returns dir when it is a valid direction, else def. Its result is only
-// ever the literals "asc"/"desc" (or the trusted def), so it is safe to splice
-// into an ORDER BY clause; raw request input never reaches the query this way.
+// dirOr returns dir when it is a valid direction ("asc"/"desc"), else def. It
+// resolves the request direction for the NON-SQL callers — the template arrow
+// (sortCtx.Dir) and the in-memory org comparator (dirLess). SQL ORDER BY
+// clauses do not use this: they go through orderByExpr, which carries the
+// direction as a boolean so the request never reaches the query at all.
 func dirOr(dir, def string) string {
 	if dir == "asc" || dir == "desc" {
 		return dir
@@ -42,38 +44,42 @@ func dirOr(dir, def string) string {
 	return def
 }
 
-// orderByExpr renders an ORDER BY term for a TRUSTED, constant SQL expression
-// with a validated direction. Unlike expr+" "+dirOr(dir,…), the direction is
-// resolved to a boolean here and the ASC/DESC suffix comes from a code literal,
-// so the request never contributes a single byte to the clause — the result is
-// provably one of two fixed strings. Defence in depth over the switch/dirOr
-// allowlists, used for the sorts whose expression is a raw subquery.
+// wantDesc resolves a validated direction to a boolean; defaultDesc applies
+// when dir is unset. It is the single point that turns the (allowlisted)
+// request direction into a bool, so callers build an ORDER BY without ever
+// concatenating the request's own bytes into SQL.
+func wantDesc(dir string, defaultDesc bool) bool {
+	switch dir {
+	case "asc":
+		return false
+	case "desc":
+		return true
+	default:
+		return defaultDesc
+	}
+}
+
+// orderBySuffix appends ASC or DESC — a code literal, chosen by a boolean — to
+// a TRUSTED, constant SQL expression. Because the direction is a bool and the
+// suffix is literal, the request contributes no bytes to the clause; the result
+// is provably one of two fixed strings.
 //
 // expr MUST be a compile-time constant; never pass request-derived text (a SQL
 // ORDER BY direction cannot be a bind parameter, so a raw expression here is
 // the boundary — keep it constant).
-func orderByExpr(expr, dir string, defaultDesc bool) string {
-	desc := defaultDesc
-	switch dir {
-	case "asc":
-		desc = false
-	case "desc":
-		desc = true
-	}
+func orderBySuffix(expr string, desc bool) string {
 	if desc {
 		return expr + " DESC"
 	}
 	return expr + " ASC"
 }
 
-// flipSQLDir returns the opposite SQL direction. It is used for columns whose
-// ORDER BY expression inverts the logical sense — e.g. severityOrder ranks the
-// most severe lowest, so "most severe first" is an ascending sort on it.
-func flipSQLDir(dir string) string {
-	if dir == "asc" {
-		return "desc"
-	}
-	return "asc"
+// orderByExpr is the common case: resolve dir against defaultDesc, then suffix
+// the trusted expr. Every index sort builds its ORDER BY through this (or
+// orderBySuffix directly, for the severity rank whose expression inverts the
+// logical direction), so no sort concatenates the request direction into SQL.
+func orderByExpr(expr, dir string, defaultDesc bool) string {
+	return orderBySuffix(expr, wantDesc(dir, defaultDesc))
 }
 
 // URL returns the current index URL re-sorted by key. When key is already the
