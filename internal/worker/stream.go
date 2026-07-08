@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -109,20 +108,7 @@ type contentBlock struct {
 // the terminal result event carrying cost/turns/usage and the max-turns
 // signal (#467). A read error other than EOF is surfaced as an error event.
 func ParseStream(r io.Reader, emit func(Event)) {
-	br := bufio.NewReader(r)
-	for {
-		raw, readErr := br.ReadBytes('\n')
-		if len(raw) > 0 {
-			parseStreamLine(raw, emit)
-		}
-		if readErr == io.EOF {
-			return
-		}
-		if readErr != nil {
-			emit(Event{Kind: KindError, Text: "stream read: " + readErr.Error()})
-			return
-		}
-	}
+	scanJSONL(r, emit, parseStreamLine)
 }
 
 func parseStreamLine(raw []byte, emit func(Event)) {
