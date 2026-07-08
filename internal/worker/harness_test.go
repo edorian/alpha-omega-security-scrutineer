@@ -20,7 +20,7 @@ func TestClaudeHarness_argsMatchBuildClaudeArgs(t *testing.T) {
 		{Name: "deep-dive", Model: "m", AllowedTools: "Read,Write", Effort: "low", MaxTurns: 7},
 		{Name: "deep-dive", Model: "m", ResumeSessionID: "sess-1", OutputFile: "report.json"},
 	} {
-		got := ClaudeHarness{}.Args(sj, "high", 30)
+		got := ClaudeHarness{}.Args(sj, "high", 30, "https://proxy.corp.com/v1")
 		want := buildClaudeArgs(sj, "high", 30)
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("ClaudeHarness.Args(%+v) = %v, want %v", sj, got, want)
@@ -114,26 +114,58 @@ type stubHarness struct {
 	acctErr string
 }
 
-func (s stubHarness) Binary() string                      { return s.bin }
-func (s stubHarness) Args(SkillJob, string, int) []string { return []string{"--stub"} }
-func (s stubHarness) ParseStream(io.Reader, func(Event))  {}
-func (s stubHarness) SkillDir(wr, n string) string        { return filepath.Join(wr, "stub-skills", n) }
-func (s stubHarness) GuideFilename() string               { return s.guide }
-func (s stubHarness) EgressHosts() []string               { return s.egress }
-func (s stubHarness) Env(string) []string                 { return s.env }
-func (s stubHarness) StateEnv(string) []string            { return s.state }
+func (s stubHarness) Binary() string                              { return s.bin }
+func (s stubHarness) Args(SkillJob, string, int, string) []string { return []string{"--stub"} }
+func (s stubHarness) ParseStream(io.Reader, func(Event))          {}
+func (s stubHarness) SkillDir(wr, n string) string                { return filepath.Join(wr, "stub-skills", n) }
+func (s stubHarness) GuideFilename() string                       { return s.guide }
+func (s stubHarness) EgressHosts() []string                       { return s.egress }
+func (s stubHarness) Env(string) []string                         { return s.env }
+func (s stubHarness) StateEnv(string) []string                    { return s.state }
 func (s stubHarness) AccountErrorText(t string) string {
 	if s.acctErr != "" && strings.Contains(t, s.acctErr) {
 		return t
 	}
 	return ""
 }
+func (s stubHarness) DefaultModels() []ModelDefault { return nil }
+
+func TestHarnessDefaultModels_registryEntriesAreComplete(t *testing.T) {
+	// Every registered harness must supply a non-empty default model
+	// list with all three tiers tagged, so a fresh install of any
+	// backend has a working pick list and tier resolution without the
+	// operator setting models: in config.
+	for name, h := range harnesses {
+		if name == "" {
+			continue
+		}
+		defs := h.DefaultModels()
+		if len(defs) == 0 {
+			t.Errorf("%s: DefaultModels() is empty", name)
+			continue
+		}
+		tiers := map[string]bool{}
+		for _, d := range defs {
+			if d.ID == "" || d.Name == "" {
+				t.Errorf("%s: entry %+v has empty Name or ID", name, d)
+			}
+			if d.Tier != "" {
+				tiers[d.Tier] = true
+			}
+		}
+		for _, want := range []string{"mid", "high", "max"} {
+			if !tiers[want] {
+				t.Errorf("%s: no DefaultModels() entry tagged Tier=%q", name, want)
+			}
+		}
+	}
+}
 
 func TestClaudeHarness_StateEnv(t *testing.T) {
-	got := ClaudeHarness{}.StateEnv("/claude-config")
-	want := []string{"CLAUDE_CONFIG_DIR=/claude-config"}
+	got := ClaudeHarness{}.StateEnv("/harness-state")
+	want := []string{"CLAUDE_CONFIG_DIR=/harness-state"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("StateEnv(/claude-config) = %v, want %v", got, want)
+		t.Errorf("StateEnv(/harness-state) = %v, want %v", got, want)
 	}
 }
 
@@ -157,19 +189,19 @@ func TestBuildRunArgs_stateEnvFromHarness(t *testing.T) {
 	// for the env entries that point at the mount. A non-claude harness
 	// must NOT get CLAUDE_CONFIG_DIR; it gets only what its StateEnv
 	// returns.
-	d := ContainerRunner{Harness: stubHarness{state: []string{"CODEX_HOME=/claude-config", "CODEX_SQLITE_HOME=/claude-config"}}}
+	d := ContainerRunner{Harness: stubHarness{state: []string{"CODEX_HOME=/harness-state", "CODEX_SQLITE_HOME=/harness-state"}}}
 	got := d.buildRunArgs("/work/abs", "img:latest", hardenedNet{}, "/data/cfg/scan-7")
 
-	if !containsEnvFlag(got, "CODEX_HOME=/claude-config") || !containsEnvFlag(got, "CODEX_SQLITE_HOME=/claude-config") {
+	if !containsEnvFlag(got, "CODEX_HOME=/harness-state") || !containsEnvFlag(got, "CODEX_SQLITE_HOME=/harness-state") {
 		t.Errorf("harness StateEnv not wired: %v", got)
 	}
-	if containsEnvFlag(got, "CLAUDE_CONFIG_DIR=/claude-config") {
+	if containsEnvFlag(got, "CLAUDE_CONFIG_DIR=/harness-state") {
 		t.Errorf("non-claude harness leaked CLAUDE_CONFIG_DIR: %v", got)
 	}
 	// The bind mount itself is harness-neutral and must still be present.
 	mounted := false
 	for i := 0; i+1 < len(got); i++ {
-		if got[i] == "-v" && strings.HasPrefix(got[i+1], "/data/cfg/scan-7:/claude-config") {
+		if got[i] == "-v" && strings.HasPrefix(got[i+1], "/data/cfg/scan-7:/harness-state") {
 			mounted = true
 		}
 	}
@@ -179,7 +211,7 @@ func TestBuildRunArgs_stateEnvFromHarness(t *testing.T) {
 
 	// Default harness keeps the historical env var.
 	def := ContainerRunner{}.buildRunArgs("/work/abs", "img:latest", hardenedNet{}, "/data/cfg/scan-7")
-	if !containsEnvFlag(def, "CLAUDE_CONFIG_DIR=/claude-config") {
+	if !containsEnvFlag(def, "CLAUDE_CONFIG_DIR=/harness-state") {
 		t.Errorf("default harness dropped CLAUDE_CONFIG_DIR: %v", def)
 	}
 }
@@ -234,10 +266,10 @@ func TestBuildRunArgs_includesHarnessEnv(t *testing.T) {
 	// each as its own `-e <entry>` pair, and a non-claude harness
 	// contributes only its own keys -- nothing claude-specific leaks
 	// from buildRunArgs itself.
-	d := ContainerRunner{Harness: stubHarness{env: []string{"OPENAI_API_KEY", "STUB_OPT=1"}}}
+	d := ContainerRunner{Harness: stubHarness{env: []string{"CODEX_API_KEY", "STUB_OPT=1"}}}
 	got := d.buildRunArgs("/work/abs", "img:latest", hardenedNet{}, "")
 
-	if !containsEnvFlag(got, "OPENAI_API_KEY") || !containsEnvFlag(got, "STUB_OPT=1") {
+	if !containsEnvFlag(got, "CODEX_API_KEY") || !containsEnvFlag(got, "STUB_OPT=1") {
 		t.Errorf("harness env not wired into run args: %v", got)
 	}
 	for _, leaked := range []string{
@@ -259,7 +291,7 @@ func TestBuildRunArgs_defaultHarnessKeepsClaudeEnv(t *testing.T) {
 	// the claude env it always has, so this refactor is no behaviour
 	// change for existing deployments.
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-	d := ContainerRunner{AnthropicBaseURL: "https://proxy.corp.com/v1"}
+	d := ContainerRunner{ModelBaseURL: "https://proxy.corp.com/v1"}
 	got := d.buildRunArgs("/work/abs", "img:latest", hardenedNet{}, "")
 	for _, want := range []string{
 		"ANTHROPIC_API_KEY",

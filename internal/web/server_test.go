@@ -37,6 +37,7 @@ func newTestServer(t testing.TB) (*Server, func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.Backend = worker.HarnessName(worker.ClaudeHarness{})
 	s.resolvePURL = func(context.Context, string) string { return "" }
 	s.resolveSync = true
 	s.prefetchEcosystems = func(uint) {}
@@ -4470,7 +4471,7 @@ func TestJobs_showsAccountPauseResumeActions(t *testing.T) {
 	s.DB.Create(&db.Scan{
 		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanPaused,
 		StatusPriority: db.StatusPriorityFor(db.ScanPaused),
-		Error:          "Claude account access paused. Queued scan paused automatically; resume once the account recovers.",
+		Error:          worker.AccountPausePrefix + " Queued scan paused automatically; resume once the account recovers.",
 		PausedUntil:    &resetAt,
 	})
 
@@ -4480,7 +4481,7 @@ func TestJobs_showsAccountPauseResumeActions(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"Claude account access paused", "/scans/resume-paused", "2026-07-01 12:30 UTC"} {
+	for _, want := range []string{worker.AccountPausePrefix, "/scans/resume-paused", "2026-07-01 12:30 UTC"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in jobs body", want)
 		}
@@ -4567,7 +4568,7 @@ func TestSettingsShow_rendersAboutAndScannerFindings(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"Scanner findings", "About", "Scrutineer commit", "Claude Code", "Semgrep", "Zizmor", "Container runtime"} {
+	for _, want := range []string{"Scanner findings", "About", "Scrutineer commit", "Backend (claude)", "Semgrep", "Zizmor", "Container runtime"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("settings page missing %q", want)
 		}
