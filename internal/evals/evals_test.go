@@ -218,7 +218,7 @@ func TestRunnerStagesSkillAndScoresReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := Runner{
-		Runner:     fakeSkillRunner{report: `{"findings":[{"title":"SQL injection in buildQuery","severity":"High","cwe":"CWE-89","location":"app.py:7"}]}`},
+		Runner:     fakeSkillRunner{report: validDeepDiveReport()},
 		SkillsRoot: "../../skills",
 		EvalsRoot:  "../../evals",
 		WorkRoot:   t.TempDir(),
@@ -233,6 +233,23 @@ func TestRunnerStagesSkillAndScoresReport(t *testing.T) {
 	}
 	if res.Cost.USD != 0.01 || res.Cost.Turns != 1 || res.Cost.InputTokens != 10 {
 		t.Fatalf("cost not accumulated: %+v", res.Cost)
+	}
+}
+
+func TestRunnerRejectsSchemaInvalidReport(t *testing.T) {
+	sc, err := LoadScenario("../../evals/security-deep-dive-sqli.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Runner{
+		Runner:     fakeSkillRunner{report: `{"findings":[{"title":"SQL injection in buildQuery","severity":"High","cwe":"CWE-89","location":"app.py:7"}]}`},
+		SkillsRoot: "../../skills",
+		EvalsRoot:  "../../evals",
+		WorkRoot:   t.TempDir(),
+	}
+	_, err = r.RunScenario(context.Background(), sc)
+	if err == nil || !strings.Contains(err.Error(), "failed schema validation") {
+		t.Fatalf("RunScenario error = %v, want schema validation failure", err)
 	}
 }
 
@@ -280,7 +297,7 @@ func TestRunAllContinuesAfterScenarioError(t *testing.T) {
 		mustLoadScenario(t, "../../evals/security-deep-dive-sqli.yaml"),
 	}
 	r := Runner{
-		Runner:     fakeSkillRunner{report: `{"findings":[{"title":"SQL injection in buildQuery","severity":"High","cwe":"CWE-89","location":"app.py:7"}]}`},
+		Runner:     fakeSkillRunner{report: validDeepDiveReport()},
 		SkillsRoot: "../../skills",
 		EvalsRoot:  "../../evals",
 		WorkRoot:   t.TempDir(),
@@ -309,12 +326,54 @@ func mustLoadScenario(t *testing.T, path string) Scenario {
 	return sc
 }
 
+func validDeepDiveReport() string {
+	return `{
+  "repository": "https://example.com/eval",
+  "commit": "abcdef1",
+  "spec_version": 1,
+  "model": "test-model",
+  "date": "2026-07-09",
+  "languages": ["Python"],
+  "boundaries": [{
+    "actor": "HTTP client",
+    "trusted": "no",
+    "controls": "No input validation before query construction",
+    "source": "app.py"
+  }],
+  "inventory": [{
+    "id": "S1",
+    "location": "app.py:7",
+    "class": "Validation",
+    "consumes": "username query parameter"
+  }],
+  "findings": [{
+    "id": "F1",
+    "sinks": ["S1"],
+    "title": "SQL injection in buildQuery",
+    "severity": "High",
+    "cwe": "CWE-89",
+    "location": "app.py:7",
+    "reachability": "reachable",
+    "quality_tier": "high",
+    "trace": "The username parameter is concatenated into SQL.",
+    "boundary": "Untrusted HTTP input crosses into SQL execution.",
+    "validation": "Manual review of app.py shows string concatenation in buildQuery.",
+    "rating": "High impact and directly reachable."
+  }],
+  "ruled_out": [{
+    "sinks": ["S1"],
+    "step": 6,
+    "reason": "No additional sinks were present in the fixture."
+  }]
+}`
+}
+
 type fakeSkillRunner struct {
 	report string
 	err    error
 }
 
-func (f fakeSkillRunner) RunSkill(_ context.Context, sj worker.SkillJob, emit func(worker.Event)) (worker.SkillResult, error) {
+func (f fakeSkillRunner) RunSkill(ctx context.Context, sj worker.SkillJob, emit func(worker.Event)) (worker.SkillResult, error) {
 	if f.err != nil {
 		return worker.SkillResult{}, f.err
 	}
@@ -325,6 +384,9 @@ func (f fakeSkillRunner) RunSkill(_ context.Context, sj worker.SkillJob, emit fu
 		return worker.SkillResult{}, err
 	}
 	if _, err := os.Stat(filepath.Join(sj.SkillDir, "SKILL.md")); err != nil {
+		return worker.SkillResult{}, err
+	}
+	if err := runGit(ctx, filepath.Join(sj.WorkRoot, "src"), "rev-parse", "--verify", "HEAD"); err != nil {
 		return worker.SkillResult{}, err
 	}
 	emit(worker.Event{

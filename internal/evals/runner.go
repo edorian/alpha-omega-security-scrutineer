@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -65,8 +66,12 @@ func (r Runner) RunScenario(ctx context.Context, sc Scenario) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := worker.CopyTree(fixture, filepath.Join(work, "src")); err != nil {
+	src := filepath.Join(work, "src")
+	if err := worker.CopyTree(fixture, src); err != nil {
 		return Result{}, fmt.Errorf("stage fixture %s: %w", fixture, err)
+	}
+	if err := ensureFixtureGitRepo(ctx, src); err != nil {
+		return Result{}, fmt.Errorf("stage fixture git repo: %w", err)
 	}
 	repo := evalRepository(sc, fixture)
 	if err := r.stageWorkspace(work, skill, repo); err != nil {
@@ -96,6 +101,9 @@ func (r Runner) RunScenario(ctx context.Context, sc Scenario) (Result, error) {
 	}, emit)
 	if err != nil {
 		return Result{}, fmt.Errorf("%s: run %s: %w", sc.Path, sc.Skill, err)
+	}
+	if detail := worker.ValidateReportSchema(skill.SchemaJSON, res.Report); detail != "" {
+		return Result{}, fmt.Errorf("%s: %s failed schema validation: %s", sc.Path, skill.OutputFile, detail)
 	}
 	matches, err := judge.Judge(sc, res.Report)
 	if err != nil {
@@ -157,6 +165,35 @@ func (r Runner) fixturePath(sc Scenario) (string, error) {
 
 func hasWindowsVolume(p string) bool {
 	return len(p) >= 2 && p[1] == ':'
+}
+
+func ensureFixtureGitRepo(ctx context.Context, src string) error {
+	if err := runGit(ctx, src, "rev-parse", "--verify", "HEAD"); err == nil {
+		return nil
+	}
+	if err := runGit(ctx, src, "init"); err != nil {
+		return err
+	}
+	if err := runGit(ctx, src, "add", "-A"); err != nil {
+		return err
+	}
+	return runGit(ctx, src,
+		"-c", "commit.gpgsign=false",
+		"-c", "gpg.format=openpgp",
+		"-c", "user.name=Scrutineer Eval",
+		"-c", "user.email=evals@scrutineer.local",
+		"commit", "-m", "eval fixture",
+	)
+}
+
+func runGit(ctx context.Context, dir string, args ...string) error {
+	cmdArgs := append([]string{"-C", dir}, args...)
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func (r Runner) stageWorkspace(work string, skill *db.Skill, repo db.Repository) error {

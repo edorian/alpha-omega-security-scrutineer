@@ -14,4 +14,3 @@ def users():
     name = flask.request.args.get("name", "")
     conn = sqlite3.connect(":memory:")
     return flask.jsonify(conn.execute(buildQuery(name)).fetchall())
-

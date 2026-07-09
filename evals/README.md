@@ -25,4 +25,3 @@ Each scenario YAML names:
 The default judge matches findings by title substring plus optional severity,
 CWE, and path. Model-backed judging can be plugged in by implementing
 `evals.Judge`.
-
