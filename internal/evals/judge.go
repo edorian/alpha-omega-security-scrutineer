@@ -5,8 +5,9 @@ package evals
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
+
+	"scrutineer/internal/findingnorm"
 )
 
 const (
@@ -75,7 +76,7 @@ func assertionMatchesFinding(a Assertion, f Finding) bool {
 	if a.Severity != "" && !strings.EqualFold(strings.TrimSpace(f.Severity), strings.TrimSpace(a.Severity)) {
 		return false
 	}
-	if a.CWE != "" && !strings.EqualFold(strings.TrimSpace(f.CWE), strings.TrimSpace(a.CWE)) {
+	if a.CWE != "" && findingnorm.CWE(f.CWE) != findingnorm.CWE(a.CWE) {
 		return false
 	}
 	if a.Path != "" && !findingHasPath(f, a.Path) {
@@ -85,21 +86,14 @@ func assertionMatchesFinding(a Assertion, f Finding) bool {
 }
 
 func findingHasPath(f Finding, want string) bool {
-	want = cleanReportPath(want)
+	want = findingnorm.RepoPath(want)
 	for _, loc := range append([]string{f.Location}, f.Locations...) {
-		if strings.HasPrefix(cleanReportPath(loc), want) {
+		got := findingnorm.LocationFile(loc)
+		if got == want || strings.HasPrefix(got, want+"/") {
 			return true
 		}
 	}
 	return false
-}
-
-func cleanReportPath(s string) string {
-	s = strings.TrimSpace(s)
-	if before, _, ok := strings.Cut(s, ":"); ok {
-		s = before
-	}
-	return filepath.ToSlash(filepath.Clean(s))
 }
 
 func containsFold(haystack, needle string) bool {

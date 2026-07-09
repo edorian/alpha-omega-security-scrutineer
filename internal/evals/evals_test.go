@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"scrutineer/internal/worker"
@@ -54,6 +55,77 @@ should_find:
 	}
 }
 
+func TestLoadScenarioRejectsUnknownAssertionField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scenario.yaml")
+	if err := os.WriteFile(path, []byte(`given: typo case
+fixture: fixtures/x
+skill: security-deep-dive
+should_find:
+  - finding: typo
+    severty: High
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadScenario(path)
+	if err == nil || !strings.Contains(err.Error(), "severty") {
+		t.Fatalf("LoadScenario error = %v, want unknown severty field", err)
+	}
+}
+
+func TestScenarioValidate(t *testing.T) {
+	tests := []struct {
+		name string
+		sc   Scenario
+	}{
+		{
+			name: "missing fixture",
+			sc: Scenario{
+				Path:       "case.yaml",
+				Given:      "x",
+				Skill:      "security-deep-dive",
+				ShouldFind: []Assertion{{Finding: "x"}},
+			},
+		},
+		{
+			name: "no assertions",
+			sc: Scenario{
+				Path:    "case.yaml",
+				Given:   "x",
+				Fixture: "fixtures/x",
+				Skill:   "security-deep-dive",
+			},
+		},
+		{
+			name: "blank should_find",
+			sc: Scenario{
+				Path:       "case.yaml",
+				Given:      "x",
+				Fixture:    "fixtures/x",
+				Skill:      "security-deep-dive",
+				ShouldFind: []Assertion{{}},
+			},
+		},
+		{
+			name: "blank should_not_find",
+			sc: Scenario{
+				Path:          "case.yaml",
+				Given:         "x",
+				Fixture:       "fixtures/x",
+				Skill:         "security-deep-dive",
+				ShouldNotFind: []Assertion{{}},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.sc.validate(); err == nil {
+				t.Fatal("validate succeeded, want error")
+			}
+		})
+	}
+}
+
 func TestHeuristicJudge(t *testing.T) {
 	sc := Scenario{
 		ShouldFind: []Assertion{{
@@ -80,6 +152,66 @@ func TestHeuristicJudge(t *testing.T) {
 	}
 }
 
+func TestAssertionMatchesFinding(t *testing.T) {
+	baseFinding := Finding{Title: "SQL injection in buildQuery", Severity: "high", CWE: "cwe-89", Location: "app.py:12:3"}
+	tests := []struct {
+		name string
+		a    Assertion
+		f    Finding
+		want bool
+	}{
+		{name: "full match", a: Assertion{Finding: "sql injection", Severity: "High", CWE: "CWE-89", Path: "app.py"}, want: true},
+		{name: "title mismatch", a: Assertion{Finding: "command injection"}, want: false},
+		{name: "severity mismatch", a: Assertion{Severity: "Low"}, want: false},
+		{name: "cwe mismatch", a: Assertion{CWE: "CWE-78"}, want: false},
+		{name: "path mismatch", a: Assertion{Path: "other.py"}, want: false},
+		{
+			name: "path avoids file prefix false positive",
+			a:    Assertion{Path: "app.py"},
+			f:    Finding{Title: "backup", Location: "app.py.bak:1"},
+			want: false,
+		},
+		{
+			name: "directory prefix match",
+			a:    Assertion{Path: "pkg"},
+			f:    Finding{Title: "nested", Location: "pkg/app.py:1"},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.f
+			if f.Title == "" && f.Location == "" {
+				f = baseFinding
+			}
+			if got := assertionMatchesFinding(tc.a, f); got != tc.want {
+				t.Fatalf("assertionMatchesFinding() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHeuristicJudgeFailures(t *testing.T) {
+	sc := Scenario{
+		ShouldFind:    []Assertion{{Finding: "SQL injection", Required: true}},
+		ShouldNotFind: []Assertion{{Finding: "debug endpoint"}},
+	}
+	report := `{"findings":[{"title":"debug endpoint exposed","severity":"Medium","location":"debug.py:1"}]}`
+	got, err := (HeuristicJudge{}).Judge(sc, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("results = %d, want 2", len(got))
+	}
+	if got[0].Matched {
+		t.Fatalf("should_find unexpectedly matched: %+v", got[0])
+	}
+	if got[1].Matched {
+		t.Fatalf("should_not_find hit should fail the assertion: %+v", got[1])
+	}
+}
+
 func TestRunnerStagesSkillAndScoresReport(t *testing.T) {
 	sc, err := LoadScenario("../../evals/security-deep-dive-sqli.yaml")
 	if err != nil {
@@ -101,31 +233,6 @@ func TestRunnerStagesSkillAndScoresReport(t *testing.T) {
 	}
 	if res.Cost.USD != 0.01 || res.Cost.Turns != 1 || res.Cost.InputTokens != 10 {
 		t.Fatalf("cost not accumulated: %+v", res.Cost)
-	}
-}
-
-func TestCopyDirNestedSymlink(t *testing.T) {
-	src := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(src, "nested"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(src, "target.txt"), []byte("ok"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("../target.txt", filepath.Join(src, "nested", "link.txt")); err != nil {
-		t.Fatal(err)
-	}
-
-	dst := filepath.Join(t.TempDir(), "copy")
-	if err := copyDir(src, dst); err != nil {
-		t.Fatal(err)
-	}
-	link, err := os.Readlink(filepath.Join(dst, "nested", "link.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if link != "../target.txt" {
-		t.Fatalf("symlink target = %q, want ../target.txt", link)
 	}
 }
 
@@ -157,11 +264,60 @@ func TestRunFixtures(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsFixtureTraversal(t *testing.T) {
+	r := Runner{EvalsRoot: "../../evals"}
+	for _, fixture := range []string{"../outside", "/tmp/repo", "C:/repo"} {
+		_, err := r.fixturePath(Scenario{Path: "case.yaml", Fixture: fixture})
+		if err == nil {
+			t.Fatalf("fixturePath(%q) succeeded, want error", fixture)
+		}
+	}
+}
+
+func TestRunAllContinuesAfterScenarioError(t *testing.T) {
+	scenarios := []Scenario{
+		{Path: "bad.yaml", Fixture: "../bad", Skill: "security-deep-dive"},
+		mustLoadScenario(t, "../../evals/security-deep-dive-sqli.yaml"),
+	}
+	r := Runner{
+		Runner:     fakeSkillRunner{report: `{"findings":[{"title":"SQL injection in buildQuery","severity":"High","cwe":"CWE-89","location":"app.py:7"}]}`},
+		SkillsRoot: "../../skills",
+		EvalsRoot:  "../../evals",
+		WorkRoot:   t.TempDir(),
+	}
+	results, err := r.RunAll(context.Background(), scenarios)
+	if err == nil {
+		t.Fatal("RunAll error = nil, want joined error")
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want 2", len(results))
+	}
+	if results[0].Error == "" {
+		t.Fatalf("first result missing error: %+v", results[0])
+	}
+	if results[1].Error != "" || results[1].FailedRequired != 0 {
+		t.Fatalf("second scenario should still run successfully: %+v", results[1])
+	}
+}
+
+func mustLoadScenario(t *testing.T, path string) Scenario {
+	t.Helper()
+	sc, err := LoadScenario(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sc
+}
+
 type fakeSkillRunner struct {
 	report string
+	err    error
 }
 
 func (f fakeSkillRunner) RunSkill(_ context.Context, sj worker.SkillJob, emit func(worker.Event)) (worker.SkillResult, error) {
+	if f.err != nil {
+		return worker.SkillResult{}, f.err
+	}
 	if sj.Name == "" || sj.SkillDir == "" || sj.OutputFile == "" {
 		return worker.SkillResult{}, os.ErrInvalid
 	}

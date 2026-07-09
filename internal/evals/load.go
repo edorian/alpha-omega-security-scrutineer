@@ -3,6 +3,7 @@
 package evals
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,7 +46,9 @@ func LoadScenario(path string) (Scenario, error) {
 		return Scenario{}, fmt.Errorf("read scenario %s: %w", path, err)
 	}
 	var sc Scenario
-	if err := yaml.Unmarshal(raw, &sc); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&sc); err != nil {
 		return Scenario{}, fmt.Errorf("parse scenario %s: %w", path, err)
 	}
 	sc.Path = path

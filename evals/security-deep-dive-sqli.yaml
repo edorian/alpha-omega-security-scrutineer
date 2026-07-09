@@ -8,5 +8,5 @@ should_find:
     path: app.py
     required: true
 should_not_find:
-  - the unused import on line 3
-
+  - finding: unused import
+    path: app.py

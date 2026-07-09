@@ -36,6 +36,13 @@ func (a *Assertion) UnmarshalYAML(value *yaml.Node) error {
 		a.Finding = strings.TrimSpace(value.Value)
 		return nil
 	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		switch value.Content[i].Value {
+		case "finding", "severity", "cwe", "path", "required":
+		default:
+			return fmt.Errorf("unknown assertion field %q", value.Content[i].Value)
+		}
+	}
 	var out struct {
 		Finding  string `yaml:"finding"`
 		Severity string `yaml:"severity"`
@@ -83,7 +90,24 @@ func (s Scenario) validate() error {
 	if len(s.ShouldFind) == 0 && len(s.ShouldNotFind) == 0 {
 		return fmt.Errorf("%s has no assertions", s.Path)
 	}
+	for _, a := range s.ShouldFind {
+		if a.empty() {
+			return fmt.Errorf("%s has an empty should_find assertion", s.Path)
+		}
+	}
+	for _, a := range s.ShouldNotFind {
+		if a.empty() {
+			return fmt.Errorf("%s has an empty should_not_find assertion", s.Path)
+		}
+	}
 	return nil
+}
+
+func (a Assertion) empty() bool {
+	return strings.TrimSpace(a.Finding) == "" &&
+		strings.TrimSpace(a.Severity) == "" &&
+		strings.TrimSpace(a.CWE) == "" &&
+		strings.TrimSpace(a.Path) == ""
 }
 
 // Finding is the subset of report.json finding fields the eval judge needs.
@@ -110,6 +134,7 @@ type Result struct {
 	Unexpected     int
 	Matches        []AssertionResult
 	Cost           Cost
+	Error          string
 }
 
 // AssertionResult is one judged assertion.

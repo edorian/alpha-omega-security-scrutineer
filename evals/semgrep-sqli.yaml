@@ -8,5 +8,6 @@ should_find:
     path: app.py
     required: true
 should_not_find:
-  - harmless string formatting in README examples
-
+  - finding: SQL injection
+    cwe: CWE-89
+    path: README.md

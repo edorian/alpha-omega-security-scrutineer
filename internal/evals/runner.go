@@ -4,21 +4,17 @@ package evals
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"scrutineer/internal/db"
+	"scrutineer/internal/findingnorm"
 	"scrutineer/internal/skills"
 	"scrutineer/internal/worker"
-)
-
-const (
-	dirPerm  = 0o755
-	filePerm = 0o644
 )
 
 // Runner executes scenarios with a real worker.SkillRunner. It prepares the
@@ -35,14 +31,16 @@ type Runner struct {
 
 func (r Runner) RunAll(ctx context.Context, scenarios []Scenario) ([]Result, error) {
 	results := make([]Result, 0, len(scenarios))
+	var errs []error
 	for _, sc := range scenarios {
 		res, err := r.RunScenario(ctx, sc)
 		if err != nil {
-			return results, err
+			res = Result{Scenario: sc, Error: err.Error()}
+			errs = append(errs, err)
 		}
 		results = append(results, res)
 	}
-	return results, nil
+	return results, errors.Join(errs...)
 }
 
 func (r Runner) RunScenario(ctx context.Context, sc Scenario) (Result, error) {
@@ -63,11 +61,15 @@ func (r Runner) RunScenario(ctx context.Context, sc Scenario) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	fixture := r.fixturePath(sc)
-	if err := copyDir(fixture, filepath.Join(work, "src")); err != nil {
+	fixture, err := r.fixturePath(sc)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := worker.CopyTree(fixture, filepath.Join(work, "src")); err != nil {
 		return Result{}, fmt.Errorf("stage fixture %s: %w", fixture, err)
 	}
-	if err := r.stageWorkspace(work, skill); err != nil {
+	repo := evalRepository(sc, fixture)
+	if err := r.stageWorkspace(work, skill, repo); err != nil {
 		return Result{}, err
 	}
 
@@ -83,7 +85,7 @@ func (r Runner) RunScenario(ctx context.Context, sc Scenario) (Result, error) {
 		}
 	}
 	res, err := r.Runner.RunSkill(ctx, worker.SkillJob{
-		Repo:       evalRepository(sc, fixture),
+		Repo:       repo,
 		WorkRoot:   work,
 		Model:      r.Model,
 		Name:       skill.Name,
@@ -135,63 +137,42 @@ func (r Runner) loadSkill(name string) (*db.Skill, error) {
 	}
 	model.Active = true
 	model.Version = 1
+	if err := worker.ValidateSkillPaths(model.Name, model.OutputFile); err != nil {
+		return nil, err
+	}
 	return model, nil
 }
 
-func (r Runner) fixturePath(sc Scenario) string {
-	if filepath.IsAbs(sc.Fixture) {
-		return sc.Fixture
+func (r Runner) fixturePath(sc Scenario) (string, error) {
+	raw := strings.TrimSpace(strings.ReplaceAll(sc.Fixture, "\\", "/"))
+	if path.IsAbs(raw) || hasWindowsVolume(raw) || findingnorm.HasParentPathSegment(raw) {
+		return "", fmt.Errorf("%s: fixture must be relative to evals root", sc.Path)
 	}
 	root := r.EvalsRoot
 	if root == "" {
 		root = "evals"
 	}
-	return filepath.Join(root, sc.Fixture)
+	return filepath.Join(root, filepath.FromSlash(raw)), nil
 }
 
-func (r Runner) stageWorkspace(work string, skill *db.Skill) error {
-	ctx := map[string]any{
-		"repository": map[string]any{
-			"url":  "file://" + filepath.Join(work, "src"),
-			"name": filepath.Base(filepath.Join(work, "src")),
-		},
-		"scrutineer": map[string]any{
-			"api_base":      "http://127.0.0.1:0/api",
-			"scan_id":       0,
-			"token":         "eval-token",
-			"repository_id": 0,
-			"metadata_dir":  ".scrutineer/",
-		},
-	}
-	b, err := json.MarshalIndent(ctx, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(work, "context.json"), b, filePerm); err != nil {
-		return err
-	}
+func hasWindowsVolume(p string) bool {
+	return len(p) >= 2 && p[1] == ':'
+}
 
-	dst := r.Runner.SkillDir(work, skill.Name)
-	if err := os.RemoveAll(dst); err != nil {
-		return err
+func (r Runner) stageWorkspace(work string, skill *db.Skill, repo db.Repository) error {
+	scan := db.Scan{
+		Repository: repo,
+		APIToken:   "eval-token",
 	}
-	if err := copyDir(skill.SourcePath, dst); err != nil {
-		return fmt.Errorf("stage skill dir: %w", err)
-	}
-	if skill.SchemaJSON != "" {
-		if err := os.WriteFile(filepath.Join(work, "schema.json"), []byte(skill.SchemaJSON), filePerm); err != nil {
-			return err
-		}
-	}
-	if err := os.WriteFile(filepath.Join(dst, "context.json"), b, filePerm); err != nil {
-		return err
-	}
-	if _, err := os.Stat(filepath.Join(skill.SourcePath, "scripts")); err == nil {
-		if err := copyDir(filepath.Join(skill.SourcePath, "scripts"), filepath.Join(work, "scripts")); err != nil {
-			return fmt.Errorf("stage skill scripts: %w", err)
-		}
-	}
-	return nil
+	return worker.StageWorkspace(
+		work,
+		r.Runner.SkillDir(work, skill.Name),
+		"http://127.0.0.1:0/api",
+		"",
+		worker.DefaultMetadataDir,
+		&scan,
+		skill,
+	)
 }
 
 func evalRepository(sc Scenario, fixture string) db.Repository {
@@ -203,66 +184,4 @@ func evalRepository(sc Scenario, fixture string) db.Repository {
 		URL:  "file://" + fixture,
 		Name: name,
 	}
-}
-
-func copyDir(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", src)
-	}
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return os.MkdirAll(dst, dirPerm)
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, dirPerm)
-		}
-		return copyFile(path, target)
-	})
-}
-
-func copyFile(src, dst string) error {
-	info, err := os.Lstat(src)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		link, err := os.Readlink(src)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), dirPerm); err != nil {
-			return err
-		}
-		return os.Symlink(link, dst)
-	}
-	if !info.Mode().IsRegular() {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), dirPerm); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
-	if err != nil {
-		return err
-	}
-	defer func() { _ = out.Close() }()
-	_, err = io.Copy(out, in)
-	return err
 }
