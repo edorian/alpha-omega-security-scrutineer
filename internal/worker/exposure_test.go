@@ -111,12 +111,19 @@ func TestParseExposureOutput_upsertsExistingRow(t *testing.T) {
 	w := newExposureWorker(t)
 	scan, skill, dep := seedExposureFixtures(t, w)
 
-	first := `{"status":"under_investigation","spec_version":1}`
-	if err := w.parseExposureOutput(&skill, &scan, dep.ID, first, func(Event) {}); err != nil {
-		t.Fatal(err)
+	if err := w.DB.Create(&db.FindingDependent{
+		FindingID:     *scan.FindingID,
+		DependentID:   dep.ID,
+		Status:        db.ExposureUnderInvestigation,
+		Justification: "old justification",
+		Rationale:     "old rationale",
+		ScanCommit:    "old-commit",
+	}).Error; err != nil {
+		t.Fatalf("seed finding dependent: %v", err)
 	}
-	second := `{"status":"known_affected","spec_version":1}`
-	if err := w.parseExposureOutput(&skill, &scan, dep.ID, second, func(Event) {}); err != nil {
+	scan.Commit = "new-commit"
+	report := `{"status":"known_not_affected","justification":"vulnerable_code_not_in_execute_path","rationale":"new rationale","spec_version":1}`
+	if err := w.parseExposureOutput(&skill, &scan, dep.ID, report, func(Event) {}); err != nil {
 		t.Fatal(err)
 	}
 	var rows []db.FindingDependent
@@ -124,8 +131,15 @@ func TestParseExposureOutput_upsertsExistingRow(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected upsert, got %d rows", len(rows))
 	}
-	if rows[0].Status != db.ExposureKnownAffected {
-		t.Errorf("status = %q", rows[0].Status)
+	row := rows[0]
+	if row.Status != db.ExposureKnownNotAffected {
+		t.Errorf("status = %q", row.Status)
+	}
+	if row.Justification != db.JustifVulnerableCodeNotInPath || row.Rationale != "new rationale" {
+		t.Errorf("verdict fields = %+v", row)
+	}
+	if row.ScanID == nil || *row.ScanID != scan.ID || row.ScanCommit != scan.Commit {
+		t.Errorf("scan fields = %+v", row)
 	}
 }
 
