@@ -60,7 +60,7 @@ func TestFindingExposureRun_enqueuesScanPerDependent(t *testing.T) {
 	}
 }
 
-func TestRecordSkippedExposure_upsertsExistingRow(t *testing.T) {
+func TestRecordSkippedExposure_preservesExistingRow(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
 
@@ -93,10 +93,10 @@ func TestRecordSkippedExposure_upsertsExistingRow(t *testing.T) {
 		t.Fatalf("finding dependent rows = %d, want 1", len(rows))
 	}
 	row := rows[0]
-	if row.Status != db.ExposureUnderInvestigation || row.Justification != "" || row.Rationale != "skipped: dependent has no repository URL" {
+	if row.Status != db.ExposureKnownAffected || row.Justification != "old justification" || row.Rationale != "old rationale" {
 		t.Errorf("verdict fields = %+v", row)
 	}
-	if row.ScanID != nil || row.ScanCommit != "" {
+	if row.ScanID == nil || *row.ScanID != f.ScanID || row.ScanCommit != "old-commit" {
 		t.Errorf("scan fields = %+v", row)
 	}
 }

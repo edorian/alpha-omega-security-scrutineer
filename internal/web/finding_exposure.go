@@ -79,5 +79,5 @@ func (s *Server) recordSkippedExposure(findingID, dependentID uint) error {
 		Status:      db.ExposureUnderInvestigation,
 		Rationale:   "skipped: dependent has no repository URL",
 	}
-	return db.UpsertFindingDependent(s.DB, row)
+	return db.EnsureFindingDependent(s.DB, row)
 }

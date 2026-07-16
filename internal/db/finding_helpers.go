@@ -99,6 +99,16 @@ func UpsertFindingDependent(gdb *gorm.DB, row FindingDependent) error {
 	}).Create(&row).Error
 }
 
+// EnsureFindingDependent creates a finding/dependent row when it is missing,
+// but deliberately preserves any existing exposure verdict. Use this for
+// placeholder rows that only make a dependent visible in the finding view.
+func EnsureFindingDependent(gdb *gorm.DB, row FindingDependent) error {
+	return gdb.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "finding_id"}, {Name: "dependent_id"}},
+		DoNothing: true,
+	}).Create(&row).Error
+}
+
 // WriteFindingTimeField is the time.Time twin of WriteFindingField for
 // timestamp columns the analyst (or a skill) can set. The closed set
 // of writable timestamp columns lives in findingTimeFieldAccessor, so
