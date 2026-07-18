@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -866,11 +867,10 @@ func TestWorker_workspaceCleanup(t *testing.T) {
 }
 
 // TestScanEmitter_batchesDBWrites pins the batching behaviour: with a long
-// flush interval, in-memory scan.Log grows on every event but the DB log
-// column stays at the value from the most recent flush. SSE publish fires
-// on every event regardless of the flush cadence so the live UI stays
-// real-time. wrap()'s final Save persists scan.Log along with every other
-// column, so a scan that finishes mid-batch still lands its full log.
+// flush interval, the append buffer grows while scan.Log and the DB log column
+// stay at the value from the most recent snapshot. SSE publish fires on every
+// event regardless of the flush cadence so the live UI stays real-time. The
+// explicit snapshot models wrap()'s final persistence boundary.
 func TestScanEmitter_batchesDBWrites(t *testing.T) {
 	gdb, err := db.Open(filepath.Join(t.TempDir(), "emit.db"))
 	if err != nil {
@@ -888,11 +888,12 @@ func TestScanEmitter_batchesDBWrites(t *testing.T) {
 		LogFlushInterval: time.Hour,
 		OnEvent:          func(_, _ uint, _, _ string) { published++ },
 	}
-	emit := w.scanEmitter(&scan)
+	emit, snapshot := w.scanEmitter(&scan)
 
 	for i := 0; i < 5; i++ {
 		emit(Event{Kind: "text", Text: "line"})
 	}
+	snapshot()
 
 	if strings.Count(scan.Log, "line") != 5 {
 		t.Errorf("in-memory scan.Log should hold all 5 events, got %q", scan.Log)
@@ -904,6 +905,42 @@ func TestScanEmitter_batchesDBWrites(t *testing.T) {
 	gdb.First(&row, scan.ID)
 	if row.Log != "" {
 		t.Errorf("DB log should be empty until interval elapses, got %q", row.Log)
+	}
+}
+
+func TestScanEmitter_preservesManyEventsAcrossFlushes(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "emit_many.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://example.com/x", Name: "x"}
+	gdb.Create(&repo)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: JobSkill, Status: db.ScanRunning}
+	gdb.Create(&scan)
+
+	w := &Worker{
+		DB:               gdb,
+		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		LogFlushInterval: time.Nanosecond,
+	}
+	emit, snapshot := w.scanEmitter(&scan)
+
+	var want strings.Builder
+	for i := 0; i < 256; i++ {
+		e := Event{Kind: KindText, Text: fmt.Sprintf("line-%03d", i)}
+		emit(e)
+		want.WriteString(FormatEvent(e))
+		want.WriteByte('\n')
+	}
+	snapshot()
+
+	if scan.Log != want.String() {
+		t.Fatalf("in-memory log does not contain every event in order")
+	}
+	var row db.Scan
+	gdb.First(&row, scan.ID)
+	if row.Log != want.String() {
+		t.Fatalf("persisted log does not contain every event in order")
 	}
 }
 
@@ -925,7 +962,7 @@ func TestScanEmitter_flushesWhenIntervalElapses(t *testing.T) {
 		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LogFlushInterval: time.Nanosecond,
 	}
-	emit := w.scanEmitter(&scan)
+	emit, _ := w.scanEmitter(&scan)
 	// Sleep past the interval so the very first event triggers a flush.
 	time.Sleep(time.Microsecond)
 	emit(Event{Kind: "text", Text: "first"})
@@ -956,7 +993,7 @@ func TestScanEmitter_sessionWritesBypassBatching(t *testing.T) {
 		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LogFlushInterval: time.Hour,
 	}
-	emit := w.scanEmitter(&scan)
+	emit, _ := w.scanEmitter(&scan)
 	emit(Event{Kind: KindSession, SessionID: "sess-123"})
 
 	var row db.Scan
@@ -999,6 +1036,41 @@ func TestScanEmitter_finalSaveCoversUnflushedTail(t *testing.T) {
 	gdb.First(&got, scan.ID)
 	if !strings.Contains(got.Log, "running skill fast") {
 		t.Errorf("final Save should persist the buffered log tail; got %q", got.Log)
+	}
+}
+
+func TestScanEmitter_failedFinalSaveCoversUnflushedTail(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "failed_tail.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://example.com/x", Name: "x"}
+	gdb.Create(&repo)
+	skill := db.Skill{Name: "fast", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
+	gdb.Create(&skill)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: JobSkill, Status: db.ScanQueued, SkillID: &skill.ID}
+	gdb.Create(&scan)
+
+	w := &Worker{
+		DB:               gdb,
+		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DataDir:          t.TempDir(),
+		Runner:           fakeRunner{skillErr: errors.New("boom")},
+		PrepareRepoSrc:   stubPrepareRepoSrc,
+		LogFlushInterval: time.Hour,
+	}
+	body, _ := json.Marshal(queue.Payload{ScanID: scan.ID})
+	if err := w.wrap(w.doSkill)(context.Background(), body); err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
+
+	var got db.Scan
+	gdb.First(&got, scan.ID)
+	if got.Status != db.ScanFailed {
+		t.Errorf("status = %s, want failed", got.Status)
+	}
+	if !strings.Contains(got.Log, "running skill fast") {
+		t.Errorf("failed final Save should persist the buffered log tail; got %q", got.Log)
 	}
 }
 

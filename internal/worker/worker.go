@@ -405,18 +405,23 @@ func (w *Worker) applyResume(scan *db.Scan, sj *SkillJob, emit func(Event)) {
 	}
 }
 
-// scanEmitter returns the emit callback handed to a job handler. It appends
-// each event to scan.Log in memory and streams it live to subscribers via
-// publish(); DB persistence is batched to logFlushInterval so a token-heavy
-// scan does not rewrite the whole log TEXT column on every event. wrap's
-// final Save(&scan) flushes the tail along with every other column, so a
+// scanEmitter returns the emit callback handed to a job handler and a snapshot
+// callback that materializes its buffered log into scan.Log. Event accumulation
+// stays linear, live publication remains immediate, and DB persistence is
+// batched to logFlushInterval. wrap snapshots before final persistence so a
 // scan that finishes between flushes still lands its full log. Session
 // events bypass batching: a session id is small, terminal-only changes,
 // and must hit the DB the moment it appears so a crash mid-run leaves the
 // scan resumable.
-func (w *Worker) scanEmitter(scan *db.Scan) func(Event) {
+func (w *Worker) scanEmitter(scan *db.Scan) (func(Event), func()) {
 	interval := w.logFlushInterval()
 	lastFlush := time.Now()
+	var logBuilder strings.Builder
+	logBuilder.Grow(len(scan.Log))
+	logBuilder.WriteString(scan.Log)
+	snapshot := func() {
+		scan.Log = logBuilder.String()
+	}
 	return func(e Event) {
 		if e.Kind == KindSession {
 			if e.SessionID != "" && e.SessionID != scan.SessionID {
@@ -429,8 +434,10 @@ func (w *Worker) scanEmitter(scan *db.Scan) func(Event) {
 			w.recordRateLimit(*e.RateLimit)
 		}
 		line := FormatEvent(e)
-		scan.Log += line + "\n"
+		logBuilder.WriteString(line)
+		logBuilder.WriteByte('\n')
 		if time.Since(lastFlush) >= interval {
+			snapshot()
 			w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Update("log", scan.Log)
 			lastFlush = time.Now()
 		}
@@ -450,7 +457,7 @@ func (w *Worker) scanEmitter(scan *db.Scan) func(Event) {
 			scan.CacheWriteTokens += e.Usage.CacheWriteTokens
 		}
 		w.publish(scan.ID, scan.RepositoryID, "scan-log", line+"\n")
-	}
+	}, snapshot
 }
 
 // clearSessionStore wipes a finished scan's resume state so its next
@@ -581,10 +588,10 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 			}
 		}
 
-		emit := w.scanEmitter(&scan)
+		emit, snapshotLog := w.scanEmitter(&scan)
 
 		report, err := h(ctx, &scan, emit)
-		return w.finalizeScan(ctx, &scan, report, err, timeout, emit)
+		return w.finalizeScan(ctx, &scan, report, err, timeout, emit, snapshotLog)
 	}
 }
 
@@ -593,8 +600,9 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 // hit an account-level Claude problem, cleans up the workspace, and publishes
 // the status. It returns an error only when the terminal save fails, which
 // wrap propagates to goqite.
-func (w *Worker) finalizeScan(ctx context.Context, scan *db.Scan, report string, err error, timeout time.Duration, emit func(Event)) error {
+func (w *Worker) finalizeScan(ctx context.Context, scan *db.Scan, report string, err error, timeout time.Duration, emit func(Event), snapshotLog func()) error {
 	finishScan(ctx, scan, report, err, timeout, emit)
+	snapshotLog()
 	if scan.Status == db.ScanDone && !scan.MaxTurnsHit {
 		w.clearSessionStore(scan)
 	}
@@ -616,6 +624,7 @@ func (w *Worker) finalizeScan(ctx context.Context, scan *db.Scan, report string,
 			}
 		}
 		// resolveAccountReset emitted after the Save above; persist that log tail.
+		snapshotLog()
 		if logErr := w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Update("log", scan.Log).Error; logErr != nil {
 			w.Log.Warn("account-pause log update failed", "scan", scan.ID, "err", logErr)
 		}
