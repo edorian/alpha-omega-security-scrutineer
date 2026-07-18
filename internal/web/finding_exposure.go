@@ -51,7 +51,10 @@ func (s *Server) findingExposureRun(w http.ResponseWriter, r *http.Request) {
 	for i := range deps {
 		dep := deps[i]
 		if dep.RepositoryURL == "" {
-			s.recordSkippedExposure(f.ID, dep.ID)
+			if err := s.recordSkippedExposure(f.ID, dep.ID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			continue
 		}
 		if _, err := s.enqueueSkillWith(r.Context(), scan.RepositoryID, skill.ID, ScanOpts{
@@ -69,16 +72,12 @@ func (s *Server) findingExposureRun(w http.ResponseWriter, r *http.Request) {
 // recordSkippedExposure writes an under_investigation row for a
 // dependent we cannot audit (no upstream repo URL) so the per-dependent
 // table on the finding page stays complete.
-func (s *Server) recordSkippedExposure(findingID, dependentID uint) {
+func (s *Server) recordSkippedExposure(findingID, dependentID uint) error {
 	row := db.FindingDependent{
 		FindingID:   findingID,
 		DependentID: dependentID,
 		Status:      db.ExposureUnderInvestigation,
 		Rationale:   "skipped: dependent has no repository URL",
 	}
-	var existing db.FindingDependent
-	if err := s.DB.Where("finding_id = ? AND dependent_id = ?", findingID, dependentID).First(&existing).Error; err == nil {
-		return
-	}
-	s.DB.Create(&row)
+	return db.EnsureFindingDependent(s.DB, row)
 }

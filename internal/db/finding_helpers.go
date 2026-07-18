@@ -9,6 +9,7 @@ import (
 
 	"github.com/git-pkgs/vulns"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // GHSAIDPattern matches a GitHub Security Advisory id: the GHSA prefix
@@ -83,6 +84,29 @@ func WriteFindingField(gdb *gorm.DB, findingID uint, field, newValue string, sou
 		}
 		return nil
 	})
+}
+
+// UpsertFindingDependent records the current exposure verdict for one
+// finding/dependent pair. The pair has a database unique index, so using the
+// same conflict target as that index makes concurrent writers update the row
+// instead of racing between a lookup and insert.
+func UpsertFindingDependent(gdb *gorm.DB, row FindingDependent) error {
+	return gdb.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "finding_id"}, {Name: "dependent_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"status", "justification", "rationale", "scan_id", "scan_commit", "updated_at",
+		}),
+	}).Create(&row).Error
+}
+
+// EnsureFindingDependent creates a finding/dependent row when it is missing,
+// but deliberately preserves any existing exposure verdict. Use this for
+// placeholder rows that only make a dependent visible in the finding view.
+func EnsureFindingDependent(gdb *gorm.DB, row FindingDependent) error {
+	return gdb.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "finding_id"}, {Name: "dependent_id"}},
+		DoNothing: true,
+	}).Create(&row).Error
 }
 
 // WriteFindingTimeField is the time.Time twin of WriteFindingField for

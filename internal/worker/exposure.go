@@ -125,7 +125,9 @@ func (w *Worker) doExposure(ctx context.Context, scan *db.Scan, emit func(Event)
 		return "", fmt.Errorf("load dependent %d: %w", *scan.DependentID, err)
 	}
 	if dep.RepositoryURL == "" {
-		w.upsertExposure(scan, dep.ID, db.ExposureUnderInvestigation, "", "dependent has no repository URL", "")
+		if err := w.upsertExposure(scan, dep.ID, db.ExposureUnderInvestigation, "", "dependent has no repository URL", ""); err != nil {
+			return "", fmt.Errorf("record exposure: %w", err)
+		}
 		emit(Event{Kind: KindText, Text: "dependent has no repository URL; marked under_investigation"})
 		return "", nil
 	}
@@ -150,7 +152,9 @@ func (w *Worker) doExposure(ctx context.Context, scan *db.Scan, emit func(Event)
 	cacheCommit, err := w.prepareDependentSrc(ctx, dep.RepositoryURL, scan.Ref, workRoot, emit)
 	if err != nil {
 		if _, ok := errors.AsType[*RepoUnreachableError](err); ok {
-			w.upsertExposure(scan, dep.ID, db.ExposureUnderInvestigation, "", "dependent repository unreachable", "")
+			if upsertErr := w.upsertExposure(scan, dep.ID, db.ExposureUnderInvestigation, "", "dependent repository unreachable", ""); upsertErr != nil {
+				return "", fmt.Errorf("record unreachable dependent exposure: %w", upsertErr)
+			}
 			emit(Event{Kind: KindError, Text: err.Error()})
 			return "", nil
 		}
@@ -205,14 +209,17 @@ func (w *Worker) doExposure(ctx context.Context, scan *db.Scan, emit func(Event)
 		}
 		return res.Report, err
 	}
-	if res.Report != "" {
-		if perr := w.parseExposureOutput(&skill, scan, dep.ID, res.Report, emit); perr != nil {
-			return res.Report, perr
-		}
-	} else {
-		w.upsertExposure(scan, dep.ID, db.ExposureUnderInvestigation, "", "skill produced no report", res.Commit)
+	return res.Report, w.recordExposureResult(&skill, scan, dep.ID, res.Report, res.Commit, emit)
+}
+
+func (w *Worker) recordExposureResult(skill *db.Skill, scan *db.Scan, depID uint, report, commit string, emit func(Event)) error {
+	if report != "" {
+		return w.parseExposureOutput(skill, scan, depID, report, emit)
 	}
-	return res.Report, nil
+	if err := w.upsertExposure(scan, depID, db.ExposureUnderInvestigation, "", "skill produced no report", commit); err != nil {
+		return fmt.Errorf("record missing exposure report: %w", err)
+	}
+	return nil
 }
 
 // parseExposureOutput reads the one-shot verdict produced by the exposure
@@ -241,12 +248,17 @@ func (w *Worker) parseExposureOutput(skill *db.Skill, scan *db.Scan, depID uint,
 	if r.Status != db.ExposureKnownNotAffected || !db.ValidExposureJustification(r.Justification) {
 		r.Justification = ""
 	}
-	w.upsertExposure(scan, depID, r.Status, r.Justification, r.Rationale, scan.Commit)
+	if err := w.upsertExposure(scan, depID, r.Status, r.Justification, r.Rationale, scan.Commit); err != nil {
+		return fmt.Errorf("record exposure: %w", err)
+	}
 	emit(Event{Kind: KindText, Text: fmt.Sprintf("recorded exposure: %s", r.Status)})
 	return nil
 }
 
-func (w *Worker) upsertExposure(scan *db.Scan, depID uint, status, justification, rationale, commit string) {
+func (w *Worker) upsertExposure(scan *db.Scan, depID uint, status, justification, rationale, commit string) error {
+	if scan.FindingID == nil {
+		return errors.New("exposure scan missing finding_id")
+	}
 	row := db.FindingDependent{
 		FindingID:     *scan.FindingID,
 		DependentID:   depID,
@@ -256,17 +268,5 @@ func (w *Worker) upsertExposure(scan *db.Scan, depID uint, status, justification
 		ScanID:        &scan.ID,
 		ScanCommit:    commit,
 	}
-	var existing db.FindingDependent
-	err := w.DB.Where("finding_id = ? AND dependent_id = ?", row.FindingID, row.DependentID).First(&existing).Error
-	if err != nil {
-		_ = w.DB.Create(&row).Error
-		return
-	}
-	w.DB.Model(&existing).Updates(map[string]any{
-		"status":        row.Status,
-		"justification": row.Justification,
-		"rationale":     row.Rationale,
-		"scan_id":       row.ScanID,
-		"scan_commit":   row.ScanCommit,
-	})
+	return db.UpsertFindingDependent(w.DB, row)
 }

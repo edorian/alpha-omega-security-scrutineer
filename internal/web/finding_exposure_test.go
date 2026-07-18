@@ -60,6 +60,47 @@ func TestFindingExposureRun_enqueuesScanPerDependent(t *testing.T) {
 	}
 }
 
+func TestRecordSkippedExposure_preservesExistingRow(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	f, _ := seedExposureFinding(t, s)
+	dep := db.Dependent{RepositoryID: f.RepositoryID, Name: "no-url", Ecosystem: "npm"}
+	if err := s.DB.Create(&dep).Error; err != nil {
+		t.Fatalf("seed dependent: %v", err)
+	}
+	if err := s.DB.Create(&db.FindingDependent{
+		FindingID:     f.ID,
+		DependentID:   dep.ID,
+		Status:        db.ExposureKnownAffected,
+		Justification: "old justification",
+		Rationale:     "old rationale",
+		ScanID:        &f.ScanID,
+		ScanCommit:    "old-commit",
+	}).Error; err != nil {
+		t.Fatalf("seed finding dependent: %v", err)
+	}
+
+	if err := s.recordSkippedExposure(f.ID, dep.ID); err != nil {
+		t.Fatalf("record skipped exposure: %v", err)
+	}
+
+	var rows []db.FindingDependent
+	if err := s.DB.Where("finding_id = ? AND dependent_id = ?", f.ID, dep.ID).Find(&rows).Error; err != nil {
+		t.Fatalf("load finding dependent: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("finding dependent rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.Status != db.ExposureKnownAffected || row.Justification != "old justification" || row.Rationale != "old rationale" {
+		t.Errorf("verdict fields = %+v", row)
+	}
+	if row.ScanID == nil || *row.ScanID != f.ScanID || row.ScanCommit != "old-commit" {
+		t.Errorf("scan fields = %+v", row)
+	}
+}
+
 func TestFindingExposureRun_noDependents422(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
