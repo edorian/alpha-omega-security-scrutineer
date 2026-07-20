@@ -30,6 +30,21 @@ func TestLoadScenarios(t *testing.T) {
 	}
 }
 
+func TestAuthOmissionScenario(t *testing.T) {
+	sc, err := LoadScenario("../../evals/security-deep-dive-auth-omission.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := `{"findings":[{"title":"Session omission bypass","severity":"High","cwe":"CWE-306","location":"app.py:18","trace":"session_cookie skips validation before serve_account_data."}]}`
+	results, err := (HeuristicJudge{}).Judge(sc, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || !results[0].Matched || !results[1].Matched {
+		t.Fatalf("scenario results = %+v, want passing positive and negative assertions", results)
+	}
+}
+
 func TestLoadScenarioDefaultsRequiredButAllowsOptional(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "scenario.yaml")
