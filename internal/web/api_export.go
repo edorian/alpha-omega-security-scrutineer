@@ -238,6 +238,7 @@ type sharingFinding struct {
 	BreakingChangeRationale string `json:"breaking_change_rationale,omitempty"`
 	DupCheck                string `json:"dup_check,omitempty"`
 	DisclosureDraft         string `json:"disclosure_draft,omitempty"`
+	SuggestedRecipients     string `json:"suggested_recipients,omitempty"`
 	ExploitedInWild         string `json:"exploited_in_wild,omitempty"`
 	ExploitedInWildEvidence string `json:"exploited_in_wild_evidence,omitempty"`
 	UpstreamFixCommit       string `json:"upstream_fix_commit,omitempty"`
@@ -358,6 +359,7 @@ func (s *Server) apiExportRepoBundle(w http.ResponseWriter, r *http.Request, rep
 			sf.BreakingChangeRationale = f.BreakingChangeRationale
 			sf.DupCheck = f.DupCheck
 			sf.DisclosureDraft = f.DisclosureDraft
+			sf.SuggestedRecipients = f.SuggestedRecipients
 			sf.ExploitedInWild = f.ExploitedInWild
 			sf.ExploitedInWildEvidence = f.ExploitedInWildEvidence
 			// The real upstream fix commit rides the new key; the legacy
@@ -645,45 +647,46 @@ func streamJSONL[T any](w http.ResponseWriter, q *gorm.DB, project func(T) map[s
 // ...) are exposed via dedicated endpoints, not inlined here.
 func findingExport(f db.Finding) map[string]any {
 	return map[string]any{
-		"id":                  f.ID,
-		"scan_id":             f.ScanID,
-		"repository_id":       f.RepositoryID,
-		"commit":              f.Commit,
-		"sub_path":            f.SubPath,
-		"fingerprint":         f.Fingerprint,
-		"last_seen_scan_id":   f.LastSeenScanID,
-		"last_seen_commit":    f.LastSeenCommit,
-		"seen_count":          f.SeenCount,
-		"missed_count":        f.MissedCount,
-		"last_missed_scan_id": f.LastMissedScanID,
-		"finding_id":          f.FindingID,
-		"sinks":               f.Sinks,
-		"title":               f.Title,
-		"severity":            f.Severity,
-		statusKey:             string(f.Status),
-		"cwe":                 f.CWE,
-		"location":            f.Location,
-		"vid":                 f.VID,
-		"affected":            f.Affected,
-		"reachability":        f.Reachability,
-		"quality_tier":        f.QualityTier,
-		"cve_id":              f.CVEID,
-		"ghsa_id":             f.GHSAID,
-		"cvss_vector":         f.CVSSVector,
-		"cvss_score":          f.CVSSScore,
-		"fix_version":         f.FixVersion,
-		"fix_commit":          f.FixCommit,
-		"resolution":          string(f.Resolution),
-		"disclosure_draft":    f.DisclosureDraft,
-		"assignee":            f.Assignee,
-		"trace":               f.Trace,
-		"boundary":            f.Boundary,
-		"validation":          f.Validation,
-		"prior_art":           f.PriorArt,
-		"reach":               f.Reach,
-		"rating":              f.Rating,
-		"created_at":          f.CreatedAt,
-		"updated_at":          f.UpdatedAt,
+		"id":                   f.ID,
+		"scan_id":              f.ScanID,
+		"repository_id":        f.RepositoryID,
+		"commit":               f.Commit,
+		"sub_path":             f.SubPath,
+		"fingerprint":          f.Fingerprint,
+		"last_seen_scan_id":    f.LastSeenScanID,
+		"last_seen_commit":     f.LastSeenCommit,
+		"seen_count":           f.SeenCount,
+		"missed_count":         f.MissedCount,
+		"last_missed_scan_id":  f.LastMissedScanID,
+		"finding_id":           f.FindingID,
+		"sinks":                f.Sinks,
+		"title":                f.Title,
+		"severity":             f.Severity,
+		statusKey:              string(f.Status),
+		"cwe":                  f.CWE,
+		"location":             f.Location,
+		"vid":                  f.VID,
+		"affected":             f.Affected,
+		"reachability":         f.Reachability,
+		"quality_tier":         f.QualityTier,
+		"cve_id":               f.CVEID,
+		"ghsa_id":              f.GHSAID,
+		"cvss_vector":          f.CVSSVector,
+		"cvss_score":           f.CVSSScore,
+		"fix_version":          f.FixVersion,
+		"fix_commit":           f.FixCommit,
+		"resolution":           string(f.Resolution),
+		"disclosure_draft":     f.DisclosureDraft,
+		"suggested_recipients": f.SuggestedRecipients,
+		"assignee":             f.Assignee,
+		"trace":                f.Trace,
+		"boundary":             f.Boundary,
+		"validation":           f.Validation,
+		"prior_art":            f.PriorArt,
+		"reach":                f.Reach,
+		"rating":               f.Rating,
+		"created_at":           f.CreatedAt,
+		"updated_at":           f.UpdatedAt,
 	}
 }
 

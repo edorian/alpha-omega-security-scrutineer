@@ -310,6 +310,9 @@ func (s *Server) apiGetFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summary := findingSummary(f)
+	// Monorepo locations are relative to the producing scan's sub-folder;
+	// finding-scoped skills need it to rebuild repository-relative paths.
+	summary["sub_path"] = f.SubPath
 	summary["trace"] = f.Trace
 	summary["boundary"] = f.Boundary
 	summary["validation"] = f.Validation
@@ -317,6 +320,7 @@ func (s *Server) apiGetFinding(w http.ResponseWriter, r *http.Request) {
 	summary["reach"] = f.Reach
 	summary["rating"] = f.Rating
 	summary["disclosure_draft"] = f.DisclosureDraft
+	summary["suggested_recipients"] = f.SuggestedRecipients
 	summary["suggested_fix"] = f.SuggestedFix
 	summary["suggested_fix_commit"] = f.SuggestedFixCommit
 	writeJSON(w, http.StatusOK, summary)
